@@ -96,7 +96,7 @@ h1 {
 
 .settings {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   margin-top: 20px;
   padding: 16px;
   border: 1px solid var(--border);
@@ -108,14 +108,22 @@ h1 {
 
 .settings > .advanced-master-toggle,
 .settings > .settings-reset-zone,
-.settings > .settings-history-zone,
-.settings > .advanced-sections {
+.settings > .settings-history-zone {
   grid-column: 1 / -1;
 }
 
-.settings > .settings-section {
+.settings-columns {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
+.settings-column {
+  display: grid;
+  gap: 12px;
+  align-content: start;
   min-width: 0;
-  align-self: start;
 }
 
 .advanced-master-toggle {
@@ -130,7 +138,7 @@ h1 {
 
 .settings-section {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   padding: 14px 16px 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -151,40 +159,44 @@ h1 {
   font-weight: 700;
 }
 
+.audio-subsection-header {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.audio-subsection-header.beep-subsection {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
 .section-note {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
 }
 
-.subsection-title {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.advanced-toggle-row {
-  margin-top: 2px;
-}
-
 .advanced-settings {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+}
+
+.advanced-subsection-header {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .advanced-sections {
-  display: grid;
-  gap: 18px;
-  grid-template-columns: 1fr;
-  align-items: start;
-  align-content: start;
+  display: block;
 }
 
 .advanced-sections > .settings-section {
-  margin-top: 0;
+  margin: 0;
 }
 
 .field {
@@ -208,6 +220,45 @@ h1 {
 .field select,
 .field input {
   width: 100%;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.interval-number-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.interval-step-buttons {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 4px;
+}
+
+.interval-step-button {
+  min-width: 0;
+  min-height: 0;
+  padding: 0 6px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.interval-step-button:not(:disabled):hover {
+  color: var(--text);
 }
 
 .voice-field {
@@ -1324,24 +1375,8 @@ button:disabled {
 }
 
 @media (min-width: 1120px) {
-  .settings {
+  .settings-columns {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
-  }
-
-  .settings > .advanced-master-toggle,
-  .settings > .settings-reset-zone,
-  .settings > .settings-history-zone,
-  .settings > .advanced-sections {
-    grid-column: 1 / -1;
-  }
-
-  .advanced-sections {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .advanced-sections > .settings-section {
-    min-width: 0;
   }
 }
 

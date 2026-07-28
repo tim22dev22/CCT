@@ -229,116 +229,142 @@
       Show Advanced Settings
     </label>
 
-    <section class="settings-section">
-      <div class="section-header">General</div>
-      <label class="toggle-field"><input type="checkbox" id="beepToggle" checked> Beep on error</label>
-      <label class="toggle-field"><input type="checkbox" id="themeToggle"> Dark mode</label>
-      <div class="subsection-title">Audio</div>
-      <label class="field voice-field">
-        <span>Voice</span>
-        <div class="voice-control-group">
-          <select id="voiceSelect">
-            <option value="nathan">Nathan</option>
-          </select>
-          <button id="voiceTestBtn" class="secondary-button voice-test-button" type="button">Test Voice</button>
+    <div class="settings-columns">
+      <div class="settings-column">
+        <section class="settings-section">
+          <div class="section-header">Appearance</div>
+          <label class="toggle-field"><input type="checkbox" id="themeToggle"> Dark mode</label>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-header">Session Behavior</div>
+          <label class="field">
+            <span>End session when</span>
+            <select id="endCondition">
+              <option value="timer">Time limit is reached</option>
+              <option value="correct">Correct-answer target is reached</option>
+            </select>
+          </label>
+          <label class="field child-field" id="durationField">
+            <span>Session time limit (minutes)</span>
+            <input type="number" id="duration" value="1" min="1">
+          </label>
+          <label class="field child-field locked" id="targetCorrectField">
+            <span>Correct answers needed</span>
+            <input type="number" id="targetCorrect" value="500" min="1" disabled>
+          </label>
+          <label class="field mode-field advanced-only hidden" id="modeField">
+            <span>Arithmetic mode <strong class="advanced-badge">Advanced</strong></span>
+            <select id="modeSelect">
+              <option value="addition">Addition (A + B)</option>
+              <option value="multiplication">Multiplication (A * B)</option>
+              <option value="subtraction">Subtraction (signed) (A - B)</option>
+              <option value="difference">Difference (absolute) (abs(A - B))</option>
+            </select>
+          </label>
+        </section>
+
+        <div id="advancedSections" class="advanced-sections hidden">
+          <section class="settings-section">
+            <div class="section-header">Timing Display</div>
+            <label class="toggle-field"><input type="checkbox" id="showIntervalTimingToggle"> Show interval timing data</label>
+          </section>
         </div>
-      </label>
-      <label class="field">
-        <span>Playback speed <strong id="playbackSpeedValue">1x</strong></span>
-        <input type="range" id="playbackSpeedSelect" min="1" max="1.5" step="0.1" value="1">
-      </label>
-    </section>
-
-    <section class="settings-section">
-      <div class="section-header">Session Behavior</div>
-      <label class="field">
-        <span>Session end mode</span>
-        <select id="endCondition">
-          <option value="timer">Timer-based</option>
-          <option value="correct">Correct-answer-based</option>
-        </select>
-      </label>
-      <label class="field child-field" id="durationField">
-        <span>Timer duration (minutes)</span>
-        <input type="number" id="duration" value="1" min="1">
-      </label>
-      <label class="field child-field locked" id="targetCorrectField">
-        <span>Target correct answers</span>
-        <input type="number" id="targetCorrect" value="500" min="1" disabled>
-      </label>
-      <label class="field mode-field advanced-only hidden" id="modeField">
-        <span>Arithmetic mode <strong class="advanced-badge">Advanced</strong></span>
-        <select id="modeSelect">
-          <option value="addition">Addition (A + B)</option>
-          <option value="multiplication">Multiplication (A * B)</option>
-          <option value="subtraction">Subtraction (signed) (A - B)</option>
-          <option value="difference">Difference (absolute) (abs(A - B))</option>
-        </select>
-      </label>
-    </section>
-
-    <section class="settings-section">
-      <div class="section-header">Interval Settings</div>
-      <label class="field">
-        <span>Starting Interval (ms)</span>
-        <input type="number" id="startingInterval" value="1500" min="200" max="1500" step="100">
-      </label>
-      <div id="advancedSettingsPanel" class="advanced-settings hidden">
-        <label class="field">
-          <span>Minimum Interval (ms)</span>
-          <input type="number" id="minimumInterval" value="700" min="100" max="1500" step="100">
-        </label>
-        <label class="field">
-          <span>Interval Increment <strong id="intervalIncrementValue">100</strong></span>
-          <input type="range" id="intervalIncrement" min="10" max="100" step="10" value="100">
-        </label>
       </div>
-    </section>
 
-    <div id="advancedSections" class="advanced-sections hidden">
-      <section class="settings-section">
-        <div class="section-header">Beep Audio</div>
-        <label class="field">
-          <span>Beep volume <strong id="beepVolumeValue">50%</strong></span>
-          <input type="range" id="beepVolume" min="0" max="100" step="1" value="50">
-        </label>
-        <button id="beepTestBtn" class="secondary-button" type="button">Test Beep</button>
-      </section>
+      <div class="settings-column">
+        <section class="settings-section">
+          <div class="section-header">Audio</div>
+          <div class="audio-subsection-header">Voice</div>
+          <label class="field voice-field">
+            <span>Voice selection</span>
+            <div class="voice-control-group">
+              <select id="voiceSelect">
+                <option value="nathan">Nathan</option>
+              </select>
+              <button id="voiceTestBtn" class="secondary-button voice-test-button" type="button">Test Voice</button>
+            </div>
+          </label>
+          <label class="field">
+            <span>Playback speed <strong id="playbackSpeedValue">1x</strong></span>
+            <input type="range" id="playbackSpeedSelect" min="1" max="1.5" step="0.1" value="1">
+          </label>
+          <div class="audio-subsection-header beep-subsection">Error beep</div>
+          <label class="toggle-field"><input type="checkbox" id="beepToggle" checked> Beep on error</label>
+          <label class="field" id="beepVolumeField">
+            <span>Beep volume <strong id="beepVolumeValue">50%</strong></span>
+            <input type="range" id="beepVolume" min="0" max="100" step="1" value="50">
+          </label>
+          <button id="beepTestBtn" class="secondary-button" type="button">Test Beep</button>
+        </section>
 
-      <section class="settings-section">
-        <div class="section-header">
-          <span>Threshold Settings</span>
-          <span class="threshold-help">
-            <button
-              id="thresholdInfoBtn"
-              class="icon-button info-button"
-              type="button"
-              aria-expanded="false"
-              aria-label="Thresholds help"
-            >i</button>
-            <span class="tooltip-box" role="tooltip">Thresholds control how strict scoring is. Presets are shortcuts for common settings.</span>
-          </span>
-        </div>
-        <div class="section-note">Balanced and Strict presets set both thresholds together.</div>
-        <label class="field">
-          <span>Correct threshold <strong id="correctThresholdValue">4</strong></span>
-          <input type="range" id="correctThreshold" min="1" max="10" step="1" value="4">
-        </label>
-        <label class="field">
-          <span>Incorrect threshold <strong id="incorrectThresholdValue">4</strong></span>
-          <input type="range" id="incorrectThreshold" min="1" max="10" step="1" value="4">
-        </label>
-        <div class="preset-row">
-          <button id="normalThresholdPresetBtn" class="secondary-button" type="button">Balanced</button>
-          <button id="highAccuracyPresetBtn" class="secondary-button" type="button">Strict</button>
-        </div>
-      </section>
-
-      <section class="settings-section">
-        <div class="section-header">Timing Display</div>
-        <label class="toggle-field"><input type="checkbox" id="showIntervalTimingToggle"> Show interval timing data</label>
-      </section>
+        <section class="settings-section">
+          <div class="section-header">Interval &amp; Difficulty</div>
+          <label class="field">
+            <span>Starting Interval (ms)</span>
+            <div class="interval-number-control">
+              <input type="number" id="startingInterval" value="3000" min="200" max="3000" step="1">
+              <span class="interval-step-buttons">
+                <button type="button" class="interval-step-button" data-interval-input="startingInterval" data-interval-direction="up" aria-label="Increase starting interval">▲</button>
+                <button type="button" class="interval-step-button" data-interval-input="startingInterval" data-interval-direction="down" aria-label="Decrease starting interval">▼</button>
+              </span>
+            </div>
+          </label>
+          <label class="field">
+            <span>Maximum Interval (ms)</span>
+            <div class="interval-number-control">
+              <input type="number" id="maximumInterval" value="3000" min="201" max="3000" step="1">
+              <span class="interval-step-buttons">
+                <button type="button" class="interval-step-button" data-interval-input="maximumInterval" data-interval-direction="up" aria-label="Increase maximum interval">▲</button>
+                <button type="button" class="interval-step-button" data-interval-input="maximumInterval" data-interval-direction="down" aria-label="Decrease maximum interval">▼</button>
+              </span>
+            </div>
+          </label>
+          <div id="advancedSettingsPanel" class="advanced-settings hidden">
+            <label class="field">
+              <span>Minimum Interval (ms)</span>
+              <div class="interval-number-control">
+                <input type="number" id="minimumInterval" value="700" min="100" max="3000" step="1">
+                <span class="interval-step-buttons">
+                  <button type="button" class="interval-step-button" data-interval-input="minimumInterval" data-interval-direction="up" aria-label="Increase minimum interval">▲</button>
+                  <button type="button" class="interval-step-button" data-interval-input="minimumInterval" data-interval-direction="down" aria-label="Decrease minimum interval">▼</button>
+                </span>
+              </div>
+            </label>
+            <label class="field">
+              <span>Interval Increment <strong id="intervalIncrementValue">100</strong></span>
+              <input type="range" id="intervalIncrement" min="10" max="100" step="10" value="100">
+            </label>
+            <div class="section-header advanced-subsection-header">
+              <span>Threshold Settings</span>
+              <span class="threshold-help">
+                <button
+                  id="thresholdInfoBtn"
+                  class="icon-button info-button"
+                  type="button"
+                  aria-expanded="false"
+                  aria-label="Thresholds help"
+                >i</button>
+                <span class="tooltip-box" role="tooltip">Correct threshold: consecutive correct answers before the interval gets shorter. Incorrect threshold: consecutive incorrect answers before it gets longer.</span>
+              </span>
+            </div>
+            <label class="field">
+              <span>Correct threshold <strong id="correctThresholdValue">4</strong></span>
+              <input type="range" id="correctThreshold" min="1" max="10" step="1" value="4">
+            </label>
+            <label class="field">
+              <span>Incorrect threshold <strong id="incorrectThresholdValue">4</strong></span>
+              <input type="range" id="incorrectThreshold" min="1" max="10" step="1" value="4">
+            </label>
+            <div class="preset-row">
+              <button id="normalThresholdPresetBtn" class="secondary-button" type="button">Balanced</button>
+              <button id="highAccuracyPresetBtn" class="secondary-button" type="button">Strict</button>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
+
   </div>
 
   <button id="startBtn" class="primary-button">Start</button>

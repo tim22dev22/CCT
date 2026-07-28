@@ -1,4 +1,4 @@
-let interval=1000, startingInterval=1000, minimumInterval=200;
+let interval=1000, startingInterval=1000, maximumInterval=1000, minimumInterval=200;
 let intervalIncrement=100;
 let numbers=[], feedback=[], responseTimes=[];
 let correctStreak=0, wrongStreak=0;
@@ -41,9 +41,10 @@ const ARITHMETIC_MODES=new Set(["addition","multiplication","subtraction","diffe
 const DEFAULT_BEEP_GAIN=0.12;
 const DEFAULT_BEEP_VOLUME_PERCENT=50;
 const MAX_BEEP_VOLUME_PERCENT=100;
-const MAX_BEEP_GAIN=0.52;
+const MAX_BEEP_GAIN=0.9;
 const defaultSettings={
-  startingInterval:"1500",
+  startingInterval:"3000",
+  maximumInterval:"3000",
   minimumInterval:"700",
   intervalIncrement:"100",
   correctThreshold:"4",
@@ -120,12 +121,19 @@ function resolveVoiceKey(value,fallbackKey=defaultSettings.voice){
 }
 
 function normalizeSavedSettings(parsed){
-  const startingInterval=String(clampInteger(parsed.startingInterval ?? parsed.interval,defaultSettings.startingInterval,200,1500));
-  const minimumFallback=Math.min(parseInt(defaultSettings.minimumInterval,10),parseInt(startingInterval,10));
-  const minimumInterval=String(Math.min(
-    parseInt(startingInterval,10),
-    clampInteger(parsed.minimumInterval,minimumFallback,100,1500)
+  const startingFallback=clampInteger(parsed.startingInterval ?? parsed.interval,defaultSettings.startingInterval,200,3000);
+  const maximumIntervalValue=Math.max(
+    201,
+    startingFallback,
+    clampInteger(parsed.maximumInterval,startingFallback,201,3000)
+  );
+  const minimumFallback=Math.min(parseInt(defaultSettings.minimumInterval,10),maximumIntervalValue-1);
+  const minimumInterval=String(clampInteger(parsed.minimumInterval,minimumFallback,100,maximumIntervalValue-1));
+  const startingInterval=String(Math.max(
+    parseInt(minimumInterval,10),
+    Math.min(startingFallback,maximumIntervalValue)
   ));
+  const maximumInterval=String(maximumIntervalValue);
   const intervalIncrement=String(clampInteger(parsed.intervalIncrement,defaultSettings.intervalIncrement,10,100));
   const correctThreshold=String(clampInteger(parsed.correctThreshold,defaultSettings.correctThreshold,1,10));
   const incorrectThreshold=String(clampInteger(parsed.incorrectThreshold,defaultSettings.incorrectThreshold,1,10));
@@ -139,6 +147,7 @@ function normalizeSavedSettings(parsed){
     ...defaultSettings,
     ...parsed,
     startingInterval,
+    maximumInterval,
     minimumInterval,
     intervalIncrement,
     correctThreshold,
@@ -217,6 +226,7 @@ function readSavedSettings(){
 function getSettingsFromForm(){
   return {
     startingInterval:startingIntervalInput.value,
+    maximumInterval:maximumIntervalInput.value,
     minimumInterval:minimumIntervalInput.value,
     intervalIncrement:intervalIncrementSelect.value,
     correctThreshold:correctThresholdInput.value,
@@ -285,9 +295,11 @@ function applyAdvancedSettingsVisibility(isVisible){
 }
 
 function applySettings(settings){
+  maximumIntervalInput.value=settings.maximumInterval;
   startingIntervalInput.value=settings.startingInterval;
   minimumIntervalInput.value=settings.minimumInterval;
   intervalIncrementSelect.value=settings.intervalIncrement;
+  updateIntervalInputConstraints();
   correctThresholdInput.value=settings.correctThreshold;
   incorrectThresholdInput.value=settings.incorrectThreshold;
   durationInput.value=settings.duration;
@@ -323,6 +335,7 @@ function handleSettingsChange(){
   voiceSelect.value=selectedVoice;
   intervalIncrement=parseInt(intervalIncrementSelect.value)||parseInt(defaultSettings.intervalIncrement);
   intervalIncrementValue.textContent=intervalIncrement;
+  updateIntervalInputConstraints();
   updateThresholdLabels();
   updateFeedbackUI();
   playbackSpeed=parseFloat(playbackSpeedSelect.value)||1;
@@ -364,12 +377,16 @@ function applyIntervalTimingVisibility(isVisible){
 
 function updateEndConditionControls(){
   const isCorrectMode=endConditionSelect.value==="correct";
+  const isBeepEnabled=beepToggle.checked;
   durationInput.disabled=isCorrectMode;
   targetCorrectInput.disabled=!isCorrectMode;
+  beepVolumeSelect.disabled=!isBeepEnabled;
   durationField.classList.toggle("locked",isCorrectMode);
   targetCorrectField.classList.toggle("locked",!isCorrectMode);
+  beepVolumeField.classList.toggle("locked",!isBeepEnabled);
   durationField.setAttribute("aria-disabled",isCorrectMode);
   targetCorrectField.setAttribute("aria-disabled",!isCorrectMode);
+  beepVolumeField.setAttribute("aria-disabled",!isBeepEnabled);
 }
 
 function applyThresholdPreset(correct,incorrect){
@@ -592,6 +609,9 @@ function normalizeHistoryRecord(record){
     ? rawIncludeInTrends
     : getDefaultTrendInclusion(status);
 
+  const startingInterval=Math.max(100,Number(record?.startingInterval)||parseInt(defaultSettings.startingInterval));
+  const maximumInterval=Math.max(startingInterval,Math.min(3000,Number(record?.maximumInterval)||startingInterval));
+
   return {
     ...record,
     schemaVersion:1,
@@ -608,7 +628,8 @@ function normalizeHistoryRecord(record){
     averageResponseTimeMs,
     correctThreshold,
     incorrectThreshold,
-    startingInterval:Math.max(100,Number(record?.startingInterval)||parseInt(defaultSettings.startingInterval)),
+    startingInterval,
+    maximumInterval,
     minimumInterval:Math.max(100,Number(record?.minimumInterval)||parseInt(defaultSettings.minimumInterval)),
     intervalIncrement:Math.max(10,Number(record?.intervalIncrement)||parseInt(defaultSettings.intervalIncrement)),
     voice:resolveVoiceKey(record?.voice,defaultSettings.voice),
@@ -1359,6 +1380,7 @@ function buildSessionRecord(){
     correctThreshold:thresholds.correct,
     incorrectThreshold:thresholds.incorrect,
     startingInterval,
+    maximumInterval,
     minimumInterval,
     intervalIncrement,
     voice:selectedVoice,
@@ -3474,8 +3496,50 @@ function getThresholds(){
   };
 }
 
+function updateIntervalInputConstraints(){
+  const maximum=clampInteger(maximumIntervalInput.value,parseInt(defaultSettings.maximumInterval,10),201,3000);
+  const step=clampInteger(intervalIncrementSelect.value,parseInt(defaultSettings.intervalIncrement,10),10,100);
+  const minimum=clampInteger(minimumIntervalInput.value,Math.min(parseInt(defaultSettings.minimumInterval,10),maximum-1),100,maximum-1);
+  const starting=clampInteger(startingIntervalInput.value,minimum,minimum,maximum);
+
+  maximumIntervalInput.min="201";
+  maximumIntervalInput.max="3000";
+  maximumIntervalInput.step=String(step);
+  startingIntervalInput.min=String(minimum);
+  startingIntervalInput.max=String(maximum);
+  startingIntervalInput.step=String(step);
+  minimumIntervalInput.min="100";
+  minimumIntervalInput.max=String(maximum-1);
+  minimumIntervalInput.step=String(step);
+
+  if(Number(startingIntervalInput.value)<minimum || Number(startingIntervalInput.value)>maximum){
+    startingIntervalInput.value=String(starting);
+  }
+  if(Number(minimumIntervalInput.value)>=maximum){
+    minimumIntervalInput.value=String(minimum);
+  }
+}
+
+function stepIntervalInput(inputId,direction){
+  const input=document.getElementById(inputId);
+  if(!input) return;
+
+  const step=clampInteger(intervalIncrementSelect.value,parseInt(defaultSettings.intervalIncrement,10),10,100);
+  const current=Number(input.value);
+  if(!Number.isFinite(current)) return;
+
+  const minimum=Number(input.min);
+  const maximum=Number(input.max);
+  const delta=direction==="up" ? step : -step;
+  const next=Math.max(minimum,Math.min(maximum,current+delta));
+  if(next===current) return;
+
+  input.value=String(next);
+  input.dispatchEvent(new Event("input",{ bubbles:true }));
+}
+
 function changeInterval(newInterval){
-  const clampedInterval=Math.max(minimumInterval,Math.min(startingInterval,newInterval));
+  const clampedInterval=Math.max(minimumInterval,Math.min(maximumInterval,newInterval));
   if(clampedInterval===interval) return;
 
   const now=getClockTime();
@@ -3704,9 +3768,10 @@ function runStimulus(){
 
 function updateTimer(){
   if(!gameRunning||endCondition!=="timer")return;
-  const r=Math.max(0,Math.floor((endTime-Date.now())/1000));
+  const remainingMs=endTime-Date.now();
+  const r=Math.max(0,Math.ceil(remainingMs/1000));
   document.getElementById("timeLeft").textContent=r;
-  if(r<=0) stopGame("completed"); else requestAnimationFrame(updateTimer);
+  if(remainingMs<=0) stopGame("completed"); else requestAnimationFrame(updateTimer);
 }
 
 async function startGame(){
@@ -3716,9 +3781,11 @@ async function startGame(){
   setSessionState("starting");
   currentSessionId=generateSessionId();
 
-  startingInterval=Math.max(100,parseInt(startingIntervalInput.value)||parseInt(defaultSettings.startingInterval));
+  maximumInterval=Math.max(201,parseInt(maximumIntervalInput.value)||parseInt(defaultSettings.maximumInterval));
   minimumInterval=Math.max(100,parseInt(minimumIntervalInput.value)||parseInt(defaultSettings.minimumInterval));
-  if(minimumInterval>startingInterval) minimumInterval=startingInterval;
+  if(minimumInterval>=maximumInterval) minimumInterval=maximumInterval-1;
+  startingInterval=Math.max(minimumInterval,parseInt(startingIntervalInput.value)||parseInt(defaultSettings.startingInterval));
+  if(startingInterval>maximumInterval) startingInterval=maximumInterval;
   interval=startingInterval;
   endCondition=endConditionSelect.value;
   targetCorrect=Math.max(1,parseInt(targetCorrectInput.value)||parseInt(defaultSettings.targetCorrect));
@@ -3840,6 +3907,7 @@ const endSessionBtn=document.getElementById("endSessionBtn");
 const newSessionBtn=document.getElementById("newSessionBtn");
 const answer=document.getElementById("answer");
 const startingIntervalInput=document.getElementById("startingInterval");
+const maximumIntervalInput=document.getElementById("maximumInterval");
 const minimumIntervalInput=document.getElementById("minimumInterval");
 const durationInput=document.getElementById("duration");
 const durationField=document.getElementById("durationField");
@@ -3862,6 +3930,7 @@ const thresholdInfoBtn=document.getElementById("thresholdInfoBtn");
 const voiceSelect=document.getElementById("voiceSelect");
 const voiceTestBtn=document.getElementById("voiceTestBtn");
 const playbackSpeedSelect=document.getElementById("playbackSpeedSelect");
+const beepVolumeField=document.getElementById("beepVolumeField");
 const beepVolumeSelect=document.getElementById("beepVolume");
 const beepVolumeValue=document.getElementById("beepVolumeValue");
 const beepTestBtn=document.getElementById("beepTestBtn");
@@ -3925,6 +3994,7 @@ const historyPrevPageBtn=document.getElementById("historyPrevPageBtn");
 const historyNextPageBtn=document.getElementById("historyNextPageBtn");
 const settingsControls=[
   startingIntervalInput,
+  maximumIntervalInput,
   minimumIntervalInput,
   intervalIncrementSelect,
   durationInput,
@@ -4100,6 +4170,11 @@ document.addEventListener("visibilitychange",()=>{
 settingsControls.forEach(control=>{
   control.addEventListener("input",handleSettingsChange);
   control.addEventListener("change",handleSettingsChange);
+});
+document.querySelectorAll(".interval-step-button").forEach(button=>{
+  button.addEventListener("click",()=>{
+    stepIntervalInput(button.dataset.intervalInput,button.dataset.intervalDirection);
+  });
 });
 voiceSelect.addEventListener("focus",()=>{
   void refreshVoiceLibrary();
