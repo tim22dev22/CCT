@@ -1,6 +1,7 @@
 let interval=1000, startingInterval=1000, maximumInterval=1000, minimumInterval=200;
 let intervalIncrement=100;
-let numbers=[], feedback=[], responseTimes=[];
+let scoredItemCount=0, totalResponseTime=0;
+let stimulusCount=0, previousStimulusNumber=null, currentStimulusNumber=null;
 let correctStreak=0, wrongStreak=0;
 let gameRunning=false, timeoutId, endTime;
 let awaitingAnswer=false, beepEnabled=true;
@@ -25,6 +26,9 @@ let historyPageIndex=0;
 let historyTrendRefreshToken=0;
 let historySessionRefreshToken=0;
 let historyTrendUpdateChain=Promise.resolve();
+let settingsSaveTimerId=null;
+let intervalStatsTimerId=null;
+let countdownTimerId=null;
 const HISTORY_PAGE_SIZE=20;
 const historyFilters={
   status:"all",
@@ -63,6 +67,8 @@ const defaultSettings={
 };
 
 let intervalCounts={}, intervalTime={}, currentIntervalStart=0;
+let sortedIntervalKeys=[];
+let intervalKeysDirty=true;
 let feedbackIndicatorColor=null, feedbackIndicatorCount=0;
 let showIntervalTiming=false;
 let selectedVoice="";
@@ -245,23 +251,45 @@ function getSettingsFromForm(){
   };
 }
 
-function saveSettings(){
+function persistSettings(){
   try{
     window.localStorage.setItem(SETTINGS_KEY,JSON.stringify(getSettingsFromForm()));
   }catch(e){}
 }
 
+function saveSettings(){
+  if(settingsSaveTimerId!==null){
+    clearTimeout(settingsSaveTimerId);
+    settingsSaveTimerId=null;
+  }
+  persistSettings();
+}
+
+function scheduleSettingsSave(){
+  if(settingsSaveTimerId!==null){
+    clearTimeout(settingsSaveTimerId);
+  }
+  settingsSaveTimerId=setTimeout(()=>{
+    settingsSaveTimerId=null;
+    persistSettings();
+  },150);
+}
+
 function resetSettingsToDefault(){
   const defaults={...defaultSettings};
-  try{
-    window.localStorage.setItem(SETTINGS_KEY,JSON.stringify(defaults));
-  }catch(e){}
   applySettings(defaults);
   saveSettings();
 }
 
 function applyTheme(isDark){
   document.body.classList.toggle("theme-dark",isDark);
+  chartInteractionState.forEach(state=>{
+    state.colors=null;
+    if(state.container && state.config && state.circles.length){
+      state.colors=getChartThemeColors();
+      applyChartState(state.container,state.config);
+    }
+  });
 }
 
 function formatPlaybackSpeed(value){
@@ -300,6 +328,9 @@ function applySettings(settings){
   minimumIntervalInput.value=settings.minimumInterval;
   intervalIncrementSelect.value=settings.intervalIncrement;
   updateIntervalInputConstraints();
+  rememberIntervalInputValue(startingIntervalInput);
+  rememberIntervalInputValue(maximumIntervalInput);
+  rememberIntervalInputValue(minimumIntervalInput);
   correctThresholdInput.value=settings.correctThreshold;
   incorrectThresholdInput.value=settings.incorrectThreshold;
   durationInput.value=settings.duration;
@@ -328,31 +359,45 @@ function applySettings(settings){
   updateEndConditionControls();
 }
 
-function handleSettingsChange(){
-  applyTheme(themeToggle.checked);
-  applyArithmeticMode(modeSelect.value);
-  selectedVoice=resolveVoiceKey(voiceSelect.value);
-  voiceSelect.value=selectedVoice;
-  intervalIncrement=parseInt(intervalIncrementSelect.value)||parseInt(defaultSettings.intervalIncrement);
-  intervalIncrementValue.textContent=intervalIncrement;
-  updateIntervalInputConstraints();
-  updateThresholdLabels();
-  updateFeedbackUI();
-  playbackSpeed=parseFloat(playbackSpeedSelect.value)||1;
-  playbackSpeedValue.textContent=formatPlaybackSpeed(playbackSpeed);
-  beepVolume=normalizeBeepVolumeSetting(beepVolumeSelect.value);
-  beepVolumeValue.textContent=formatBeepVolume(beepVolume);
-  applyAdvancedSettingsVisibility(showAdvancedSettingsToggle.checked);
-  applyIntervalTimingVisibility(showIntervalTimingToggle.checked);
-  if(sessionState==="active"){
-    void preloadVoice(selectedVoice).then(()=>{
-      if(sessionState==="active"){
-        retainOnlyVoiceCache(selectedVoice);
-      }
-    }).catch(()=>{});
+function handleSettingsChange(event){
+  const target=event?.currentTarget || event?.target;
+
+  if(target===themeToggle){
+    applyTheme(themeToggle.checked);
+  }else if(target===modeSelect){
+    applyArithmeticMode(modeSelect.value);
+  }else if(target===voiceSelect){
+    selectedVoice=resolveVoiceKey(voiceSelect.value);
+    voiceSelect.value=selectedVoice;
+    if(sessionState==="active"){
+      void preloadVoice(selectedVoice).then(()=>{
+        if(sessionState==="active"){
+          retainOnlyVoiceCache(selectedVoice);
+        }
+      }).catch(()=>{});
+    }
+  }else if(target===intervalIncrementSelect){
+    intervalIncrement=parseInt(intervalIncrementSelect.value)||parseInt(defaultSettings.intervalIncrement);
+    intervalIncrementValue.textContent=intervalIncrement;
+    updateIntervalInputConstraints();
+  }else if(target===correctThresholdInput || target===incorrectThresholdInput){
+    updateThresholdLabels();
+    updateFeedbackUI();
+  }else if(target===playbackSpeedSelect){
+    playbackSpeed=parseFloat(playbackSpeedSelect.value)||1;
+    playbackSpeedValue.textContent=formatPlaybackSpeed(playbackSpeed);
+  }else if(target===beepVolumeSelect){
+    beepVolume=normalizeBeepVolumeSetting(beepVolumeSelect.value);
+    beepVolumeValue.textContent=formatBeepVolume(beepVolume);
+  }else if(target===showAdvancedSettingsToggle){
+    applyAdvancedSettingsVisibility(showAdvancedSettingsToggle.checked);
+  }else if(target===showIntervalTimingToggle){
+    applyIntervalTimingVisibility(showIntervalTimingToggle.checked);
+  }else if(target===endConditionSelect || target===beepToggle){
+    updateEndConditionControls();
   }
-  updateEndConditionControls();
-  saveSettings();
+
+  scheduleSettingsSave();
 }
 
 function applyIntervalTimingVisibility(isVisible){
@@ -363,6 +408,10 @@ function applyIntervalTimingVisibility(isVisible){
     resultsIntervalStatsWrap.classList.toggle("hidden",!isVisible);
   }
   if(!isVisible){
+    if(intervalStatsTimerId!==null){
+      clearTimeout(intervalStatsTimerId);
+      intervalStatsTimerId=null;
+    }
     if(wasVisible && gameRunning && currentIntervalStart){
       const now=getClockTime();
       if(interval !== startingInterval || intervalCounts[interval]){
@@ -1018,8 +1067,7 @@ const sessionHistoryStore=(()=>{
           }
 
           const weight=Math.max(1,Number(session.totalQuestionsAsked)||0);
-          addDailyTrendBucket(accuracyBuckets,session,session.accuracy,weight);
-          addDailyTrendBucket(responseBuckets,session,session.averageResponseTimeMs,weight);
+          addDailyTrendValues(accuracyBuckets,responseBuckets,session,weight);
 
           cursor.continue();
         };
@@ -1360,8 +1408,7 @@ const sessionHistoryStore=(()=>{
 })();
 
 function buildSessionRecord(){
-  const totalItems=feedback.length;
-  const totalResponseTime=responseTimes.reduce((sum,time)=>sum+time,0);
+  const totalItems=scoredItemCount;
   const totalQuestionsAsked=Math.max(0,totalItems-(excludeLastQuestionFromCount?1:0));
   const thresholds=getThresholds();
 
@@ -1390,14 +1437,21 @@ function buildSessionRecord(){
 }
 
 function buildLatestTraceRecord(){
-  const trimmedTrace=sessionIntervalTrace
-    .slice(2,Math.max(2,sessionIntervalTrace.length-(excludeLastQuestionFromCount ? 1 : 0)))
-    .map((point,index)=>({
-      questionNumber:index+1,
+  const firstTraceIndex=2;
+  const lastTraceIndex=Math.max(
+    firstTraceIndex,
+    sessionIntervalTrace.length-(excludeLastQuestionFromCount ? 1 : 0)
+  );
+  const trimmedTrace=new Array(Math.max(0,lastTraceIndex-firstTraceIndex));
+  for(let sourceIndex=firstTraceIndex; sourceIndex<lastTraceIndex; sourceIndex++){
+    const point=sessionIntervalTrace[sourceIndex];
+    trimmedTrace[sourceIndex-firstTraceIndex]={
+      questionNumber:sourceIndex-firstTraceIndex+1,
       interval:point.interval,
       timestamp:point.timestamp,
       responseTime:point.responseTime
-    }));
+    };
+  }
   const totalQuestionsAsked=trimmedTrace.length;
   return normalizeLatestTraceRecord({
     sessionId:currentSessionId || generateSessionId(),
@@ -1415,11 +1469,22 @@ function shouldStoreSession(record){
   return durationMs>=30000 && correctAnswersCount>=10;
 }
 
+const sessionDateTimeFormatter=new Intl.DateTimeFormat(undefined,{
+  dateStyle:"medium",
+  timeStyle:"short"
+});
+const shortChartDateFormatter=new Intl.DateTimeFormat(undefined,{
+  month:"short",
+  day:"numeric"
+});
+const chartDateWithYearFormatter=new Intl.DateTimeFormat(undefined,{
+  month:"short",
+  day:"numeric",
+  year:"numeric"
+});
+
 function formatSessionDateTime(timestamp){
-  return new Intl.DateTimeFormat(undefined,{
-    dateStyle:"medium",
-    timeStyle:"short"
-  }).format(new Date(timestamp));
+  return sessionDateTimeFormatter.format(new Date(timestamp));
 }
 
 function escapeSvgText(value){
@@ -1466,9 +1531,8 @@ function getQuestionLabelIndices(count){
 }
 
 function formatChartDateLabel(timestamp,includeYear=false){
-  const options={ month:"short", day:"numeric" };
-  if(includeYear) options.year="numeric";
-  return new Intl.DateTimeFormat(undefined,options).format(new Date(timestamp));
+  const formatter=includeYear ? chartDateWithYearFormatter : shortChartDateFormatter;
+  return formatter.format(new Date(timestamp));
 }
 
 function getLocalCalendarDayKey(timestamp){
@@ -1480,25 +1544,17 @@ function getLocalCalendarDayKey(timestamp){
   ].join("-");
 }
 
-function getLocalCalendarDayStart(timestamp){
-  const date=new Date(Number(timestamp)||0);
-  return new Date(date.getFullYear(),date.getMonth(),date.getDate()).getTime();
-}
-
 function getNextLocalCalendarDayStart(timestamp){
   const date=new Date(Number(timestamp)||0);
   date.setDate(date.getDate()+1);
   return new Date(date.getFullYear(),date.getMonth(),date.getDate()).getTime();
 }
 
-function addDailyTrendBucket(buckets,session,value,weight){
+function addDailyTrendValue(buckets,dayKey,dayStart,value,weight){
   const numericValue=Number(value);
   const numericWeight=Number(weight);
   if(!Number.isFinite(numericValue) || !Number.isFinite(numericWeight) || numericWeight<=0) return;
 
-  const timestamp=Number(session?.endedAt || session?.startedAt || Date.now());
-  const dayKey=getLocalCalendarDayKey(timestamp);
-  const dayStart=getLocalCalendarDayStart(timestamp);
   const bucket=buckets.get(dayKey) || {
     dayKey,
     dayStart,
@@ -1512,6 +1568,29 @@ function addDailyTrendBucket(buckets,session,value,weight){
   bucket.count += 1;
   bucket.dayStart=Math.min(bucket.dayStart,dayStart);
   buckets.set(dayKey,bucket);
+}
+
+function addDailyTrendValues(accuracyBuckets,responseBuckets,session,weight){
+  const numericWeight=Number(weight);
+  const accuracy=Number(session?.accuracy);
+  const responseTime=Number(session?.averageResponseTimeMs);
+  if(!Number.isFinite(numericWeight) || numericWeight<=0) return;
+  if(!Number.isFinite(accuracy) && !Number.isFinite(responseTime)) return;
+
+  const timestamp=Number(session?.endedAt || session?.startedAt || Date.now());
+  const date=new Date(timestamp);
+  const year=date.getFullYear();
+  const month=date.getMonth();
+  const day=date.getDate();
+  const dayKey=[
+    year,
+    String(month+1).padStart(2,"0"),
+    String(day).padStart(2,"0")
+  ].join("-");
+  const dayStart=new Date(year,month,day).getTime();
+
+  addDailyTrendValue(accuracyBuckets,dayKey,dayStart,accuracy,numericWeight);
+  addDailyTrendValue(responseBuckets,dayKey,dayStart,responseTime,numericWeight);
 }
 
 function finalizeDailyTrendBuckets(buckets){
@@ -1553,17 +1632,6 @@ function finalizeDailyTrendBuckets(buckets){
   return points;
 }
 
-function aggregateSessionsByDay(sessions,valueGetter,weightGetter){
-  const buckets=new Map();
-
-  sessions.forEach(session=>{
-    const weight=Number(weightGetter ? weightGetter(session) : 1);
-    addDailyTrendBucket(buckets,session,valueGetter(session),weight);
-  });
-
-  return finalizeDailyTrendBuckets(buckets);
-}
-
 function isTrendEligibleSession(session){
   return session?.includeInTrends!==false;
 }
@@ -1573,18 +1641,22 @@ function isSessionInMode(session,mode){
 }
 
 function buildTrendDataForSessions(sessions,mode){
-  const filteredSessions=sessions.filter(session=>isTrendEligibleSession(session) && isSessionInMode(session,mode));
+  const accuracyBuckets=new Map();
+  const responseBuckets=new Map();
+
+  sessions.forEach(session=>{
+    if(!isTrendEligibleSession(session) || !isSessionInMode(session,mode)) return;
+    addDailyTrendValues(
+      accuracyBuckets,
+      responseBuckets,
+      session,
+      Number(session.totalQuestionsAsked)
+    );
+  });
+
   return {
-    accuracyPoints:aggregateSessionsByDay(
-      filteredSessions,
-      session=>Number(session.accuracy),
-      session=>Number(session.totalQuestionsAsked)
-    ),
-    responsePoints:aggregateSessionsByDay(
-      filteredSessions,
-      session=>Number(session.averageResponseTimeMs),
-      session=>Number(session.totalQuestionsAsked)
-    ),
+    accuracyPoints:finalizeDailyTrendBuckets(accuracyBuckets),
+    responsePoints:finalizeDailyTrendBuckets(responseBuckets),
     mode
   };
 }
@@ -1613,6 +1685,7 @@ function formatChartExactValue(value,unit=""){
 }
 
 const chartInteractionState=new Map();
+const latestIntervalOverviewCache=new WeakMap();
 const latestIntervalChartViewState={
   mode:"overview",
   blockIndex:null,
@@ -1645,7 +1718,18 @@ function getChartState(container){
       detailsEl:null,
       points:[],
       chartKey:key,
-      boundHandlers:null
+      boundHandlers:null,
+      circles:[],
+      circlesByPoint:new Map(),
+      hitGroups:[],
+      svg:null,
+      chartWidth:720,
+      chartHeight:260,
+      colors:null,
+      container:null,
+      config:null,
+      pendingPointer:null,
+      pointerFrameId:null
     });
   }
   return chartInteractionState.get(key);
@@ -1759,60 +1843,98 @@ function buildChartPointDetail(point,config,index){
   `;
 }
 
-function applyChartState(container,config){
+function cacheChartRenderState(container,config,width,height){
   const state=getChartState(container);
   const circles=[...container.querySelectorAll("circle.chart-point")];
   const detailsEl=container.id ? document.getElementById(container.id.replace(/Chart$/,"Details")) : null;
   state.detailsEl=ensureChartTooltip(container,detailsEl);
   state.points=config.pointMeta || [];
+  state.circles=circles;
+  state.circlesByPoint=new Map();
+  state.svg=container.querySelector("svg.chart-svg");
+  state.chartWidth=width;
+  state.chartHeight=height;
+  state.colors=getChartThemeColors();
+  state.container=container;
+  state.config=config;
 
-  if(state.selectedIndex!==null && state.selectedIndex>=circles.length){
+  const hitGroupsByIndex=new Map();
+  circles.forEach(circle=>{
+    const pointIndex=Number(circle.dataset.pointIndex);
+    const x=Number(circle.getAttribute("cx"));
+    const y=Number(circle.getAttribute("cy"));
+    if(!Number.isFinite(pointIndex) || !Number.isFinite(x) || !Number.isFinite(y)) return;
+
+    const pointCircles=state.circlesByPoint.get(pointIndex) || [];
+    pointCircles.push(circle);
+    state.circlesByPoint.set(pointIndex,pointCircles);
+
+    const group=hitGroupsByIndex.get(pointIndex) || { index:pointIndex, x, entries:[] };
+    group.entries.push({ circle, x, y });
+    hitGroupsByIndex.set(pointIndex,group);
+  });
+  state.hitGroups=[...hitGroupsByIndex.values()].sort((a,b)=>a.x-b.x);
+
+  if(state.selectedIndex!==null && state.selectedIndex>=state.points.length){
     state.selectedIndex=null;
   }
 
-  if(state.hoverIndex!==null && state.hoverIndex>=circles.length){
+  if(state.hoverIndex!==null && state.hoverIndex>=state.points.length){
     state.hoverIndex=null;
   }
+}
 
-  const colors=getChartThemeColors();
+function applyChartState(container,config,changedIndices=null){
+  const state=getChartState(container);
+  const colors=state.colors || getChartThemeColors();
   const multiSeries=Array.isArray(config.series) && config.series.length>1;
   const baseRadius=Number.isFinite(Number(config.pointRadius)) ? Math.max(0,Number(config.pointRadius)) : 4.5;
   const hoverRadius=Number.isFinite(Number(config.pointHoverRadius)) ? Math.max(baseRadius,Number(config.pointHoverRadius)) : baseRadius + 1.2;
   const selectedRadius=Number.isFinite(Number(config.pointSelectedRadius)) ? Math.max(hoverRadius,Number(config.pointSelectedRadius)) : baseRadius + 2.2;
-  circles.forEach((circle,index)=>{
-    const circleIndex=Number(circle.dataset.pointIndex);
-    const isSelected=circleIndex===state.selectedIndex;
-    const isHovered=!isSelected && circleIndex===state.hoverIndex;
+  const pointIndices=changedIndices
+    ? [...new Set(changedIndices.filter(index=>index!==null && index!==undefined))]
+    : [...state.circlesByPoint.keys()];
+
+  pointIndices.forEach(pointIndex=>{
+    const pointCircles=state.circlesByPoint.get(pointIndex) || [];
+    const isSelected=pointIndex===state.selectedIndex;
+    const isHovered=!isSelected && pointIndex===state.hoverIndex;
     const active=isSelected || isHovered;
     const radius=isSelected ? selectedRadius : isHovered ? hoverRadius : baseRadius;
-    const seriesIndex=Number(circle.dataset.seriesIndex);
-    const seriesColor=multiSeries && config.series && config.series[seriesIndex]
-      ? (config.series[seriesIndex].lineColor || config.series[seriesIndex].pointStroke || colors.accent)
-      : colors.accent;
 
-    circle.setAttribute("r",String(radius));
-    if(multiSeries){
-      circle.setAttribute("fill",active ? seriesColor : colors.surface);
-      circle.setAttribute("stroke",active ? colors.surface : seriesColor);
-    }else{
-      circle.setAttribute("fill",active ? colors.accent : colors.surface);
-      circle.setAttribute("stroke",active ? colors.surface : colors.accent);
-    }
-    circle.setAttribute("stroke-width",isSelected ? "3" : isHovered ? "2.5" : "2");
-    circle.setAttribute("opacity",active ? "1" : "0.95");
-    circle.style.cursor="pointer";
-    circle.classList.toggle("is-selected",isSelected);
-    circle.classList.toggle("is-hovered",isHovered);
+    pointCircles.forEach(circle=>{
+      const seriesIndex=Number(circle.dataset.seriesIndex);
+      const seriesColor=multiSeries && config.series && config.series[seriesIndex]
+        ? (config.series[seriesIndex].lineColor || config.series[seriesIndex].pointStroke || colors.accent)
+        : colors.accent;
+
+      circle.setAttribute("r",String(radius));
+      if(multiSeries){
+        circle.setAttribute("fill",active ? seriesColor : colors.surface);
+        circle.setAttribute("stroke",active ? colors.surface : seriesColor);
+      }else{
+        circle.setAttribute("fill",active ? colors.accent : colors.surface);
+        circle.setAttribute("stroke",active ? colors.surface : colors.accent);
+      }
+      circle.setAttribute("stroke-width",isSelected ? "3" : isHovered ? "2.5" : "2");
+      circle.setAttribute("opacity",active ? "1" : "0.95");
+      circle.style.cursor="pointer";
+      circle.classList.toggle("is-selected",isSelected);
+      circle.classList.toggle("is-hovered",isHovered);
+    });
   });
 
-  if(detailsEl){
+  if(state.detailsEl){
     const activeIndex=state.hoverIndex!==null ? state.hoverIndex : state.selectedIndex;
     const activePoint=activeIndex!==null ? state.points[activeIndex] : null;
     const tooltipEl=state.detailsEl;
     if(tooltipEl){
       tooltipEl.hidden=!activePoint;
-      tooltipEl.innerHTML=buildChartPointDetail(activePoint,config,activeIndex===null ? 0 : activeIndex);
       if(activePoint){
+        const detailHtml=buildChartPointDetail(activePoint,config,activeIndex);
+        if(tooltipEl.innerHTML!==detailHtml){
+          tooltipEl.innerHTML=detailHtml;
+        }
         const activeAnchor=state.hoverAnchor || state.selectedAnchor || activePoint;
         const position=getChartTooltipPosition(activeAnchor);
         tooltipEl.style.setProperty("--chart-tooltip-left",position.left);
@@ -1831,34 +1953,69 @@ function bindChartInteractions(container,config){
     container.removeEventListener("pointerleave",state.boundHandlers.pointerleave);
     container.removeEventListener("pointercancel",state.boundHandlers.pointerleave);
   }
+  if(state.pointerFrameId!==null){
+    cancelAnimationFrame(state.pointerFrameId);
+    state.pointerFrameId=null;
+  }
+  state.pendingPointer=null;
   state.selectedIndex=null;
   state.hoverIndex=null;
   state.selectedAnchor=null;
   state.hoverAnchor=null;
 
   const getLiveCircleHit=event=>{
-    const circles=[...container.querySelectorAll("circle.chart-point")].filter(circle=>circle.isConnected);
-    if(!circles.length) return null;
+    const liveState=getChartState(container);
+    const groups=liveState.hitGroups;
+    const svg=liveState.svg;
+    if(!groups.length || !svg || !svg.isConnected) return null;
+
+    const rect=svg.getBoundingClientRect();
+    if(!rect.width || !rect.height) return null;
+    const scaleX=rect.width/liveState.chartWidth;
+    const scaleY=rect.height/liveState.chartHeight;
+    const svgX=(event.clientX-rect.left)/scaleX;
+    const maxConfiguredRadius=Math.max(
+      Number(config.pointRadius)||4.5,
+      Number(config.pointHoverRadius)||0,
+      Number(config.pointSelectedRadius)||0
+    );
+    const maxHitRadius=Math.max(14,maxConfiguredRadius*3);
+
+    let low=0;
+    let high=groups.length;
+    while(low<high){
+      const mid=(low+high)>>1;
+      if(groups[mid].x<svgX) low=mid+1;
+      else high=mid;
+    }
 
     let nearest=null;
     let nearestDistance=Infinity;
-    circles.forEach(circle=>{
-      const rect=circle.getBoundingClientRect();
-      if(!rect.width && !rect.height) return;
-      const centerX=rect.left + rect.width/2;
-      const centerY=rect.top + rect.height/2;
-      const distance=Math.hypot(centerX-event.clientX,centerY-event.clientY);
-      if(distance<nearestDistance){
-        nearestDistance=distance;
-        nearest={ circle, distance, centerX, centerY };
-      }
-    });
+    const inspectGroup=group=>{
+      const groupDistance=Math.abs(group.x-svgX)*scaleX;
+      if(groupDistance>maxHitRadius) return false;
 
-    const radius=nearest?.circle ? Number(nearest.circle.getAttribute("r")) || 4.5 : 4.5;
+      group.entries.forEach(entry=>{
+        if(!entry.circle.isConnected) return;
+        const centerX=rect.left + entry.x*scaleX;
+        const centerY=rect.top + entry.y*scaleY;
+        const distance=Math.hypot(centerX-event.clientX,centerY-event.clientY);
+        if(distance<nearestDistance){
+          nearestDistance=distance;
+          nearest={ entry, distance, centerX, centerY };
+        }
+      });
+      return true;
+    };
+
+    for(let index=low; index<groups.length && inspectGroup(groups[index]); index++){}
+    for(let index=low-1; index>=0 && inspectGroup(groups[index]); index--){}
+
+    const radius=nearest?.entry?.circle ? Number(nearest.entry.circle.getAttribute("r")) || 4.5 : 4.5;
     const hitRadius=Math.max(14,radius*3);
     if(!nearest || nearestDistance>hitRadius) return null;
 
-    const index=Number(nearest.circle.dataset.pointIndex);
+    const index=Number(nearest.entry.circle.dataset.pointIndex);
     if(!Number.isFinite(index)) return null;
     return {
       index,
@@ -1877,7 +2034,7 @@ function bindChartInteractions(container,config){
     };
   };
 
-  const handlePointerMove=event=>{
+  const processPointerMove=event=>{
     const hit=getLiveCircleHit(event);
     if(!hit){
       if(getChartState(container).hoverIndex!==null){
@@ -1893,7 +2050,28 @@ function bindChartInteractions(container,config){
     setChartHover(container,hit.index,config,getAnchorFromHit(hit));
   };
 
+  const handlePointerMove=event=>{
+    state.pendingPointer={
+      clientX:event.clientX,
+      clientY:event.clientY
+    };
+    if(state.pointerFrameId!==null) return;
+    state.pointerFrameId=requestAnimationFrame(()=>{
+      state.pointerFrameId=null;
+      const pendingPointer=state.pendingPointer;
+      state.pendingPointer=null;
+      if(pendingPointer){
+        processPointerMove(pendingPointer);
+      }
+    });
+  };
+
   const handlePointerDown=event=>{
+    if(state.pointerFrameId!==null){
+      cancelAnimationFrame(state.pointerFrameId);
+      state.pointerFrameId=null;
+      state.pendingPointer=null;
+    }
     const hit=getLiveCircleHit(event);
     if(!hit){
       clearChartSelection(container,config);
@@ -1910,14 +2088,20 @@ function bindChartInteractions(container,config){
   };
 
   const handlePointerLeave=()=>{
+    if(state.pointerFrameId!==null){
+      cancelAnimationFrame(state.pointerFrameId);
+      state.pointerFrameId=null;
+    }
+    state.pendingPointer=null;
     const currentState=getChartState(container);
     if(currentState.selectedIndex===null){
       clearChartHover(container,config);
       return;
     }
+    const previousHoverIndex=currentState.hoverIndex;
     currentState.hoverIndex=null;
     currentState.hoverAnchor=null;
-    applyChartState(container,config);
+    applyChartState(container,config,[previousHoverIndex,currentState.selectedIndex]);
   };
 
   state.boundHandlers={
@@ -1941,43 +2125,61 @@ function clearChartInteractions(container){
     container.removeEventListener("pointercancel",state.boundHandlers.pointerleave);
     state.boundHandlers=null;
   }
+  if(state.pointerFrameId!==null){
+    cancelAnimationFrame(state.pointerFrameId);
+    state.pointerFrameId=null;
+  }
+  state.pendingPointer=null;
   state.selectedIndex=null;
   state.hoverIndex=null;
   state.selectedAnchor=null;
   state.hoverAnchor=null;
   state.points=[];
+  state.circles=[];
+  state.circlesByPoint=new Map();
+  state.hitGroups=[];
+  state.svg=null;
+  state.colors=null;
+  state.container=null;
+  state.config=null;
 }
 
 function setChartHover(container,index,config,anchor=null){
   const state=getChartState(container);
+  const previousHoverIndex=state.hoverIndex;
   state.hoverIndex=index;
   state.hoverAnchor=anchor;
-  applyChartState(container,config);
+  applyChartState(container,config,[previousHoverIndex,index,state.selectedIndex]);
 }
 
 function setChartSelection(container,index,config,anchor=null){
   const state=getChartState(container);
+  const previousSelectedIndex=state.selectedIndex;
+  const previousHoverIndex=state.hoverIndex;
   state.selectedIndex=index;
   state.hoverIndex=index;
   state.selectedAnchor=anchor;
   state.hoverAnchor=anchor;
-  applyChartState(container,config);
+  applyChartState(container,config,[previousSelectedIndex,previousHoverIndex,index]);
 }
 
 function clearChartHover(container,config){
   const state=getChartState(container);
+  const previousHoverIndex=state.hoverIndex;
   state.hoverIndex=null;
   state.hoverAnchor=null;
-  applyChartState(container,config);
+  applyChartState(container,config,[previousHoverIndex,state.selectedIndex]);
 }
 
 function clearChartSelection(container,config){
   const state=getChartState(container);
+  const previousSelectedIndex=state.selectedIndex;
+  const previousHoverIndex=state.hoverIndex;
   state.selectedIndex=null;
   state.hoverIndex=null;
   state.selectedAnchor=null;
   state.hoverAnchor=null;
-  applyChartState(container,config);
+  applyChartState(container,config,[previousSelectedIndex,previousHoverIndex]);
 }
 
 function buildChartPath(points){
@@ -2076,29 +2278,50 @@ function getLatestIntervalSessionKey(latestTrace){
 function buildLatestIntervalOverviewBlocks(tracePoints,chartWidth=720){
   const pointCount=tracePoints.length;
   const blockSize=getLatestIntervalBlockSize(pointCount,chartWidth);
+  const cachedByBlockSize=latestIntervalOverviewCache.get(tracePoints);
+  const cachedOverview=cachedByBlockSize?.get(blockSize);
+  if(cachedOverview && cachedOverview.pointCount===pointCount){
+    return cachedOverview.result;
+  }
+
   const blocks=[];
 
   for(let start=0; start<pointCount; start+=blockSize){
-    const slice=tracePoints.slice(start,start+blockSize);
-    const intervalValues=slice.map(point=>Number(point.interval)).filter(Number.isFinite);
-    const responseValues=slice
-      .map(point=>Number(point.responseTime))
-      .filter(Number.isFinite);
-    const intervalAverage=intervalValues.length
-      ? intervalValues.reduce((sum,value)=>sum+value,0)/intervalValues.length
+    const end=Math.min(pointCount,start+blockSize);
+    let intervalTotal=0;
+    let intervalCount=0;
+    let responseTotal=0;
+    let responseCount=0;
+
+    for(let index=start; index<end; index++){
+      const point=tracePoints[index];
+      const intervalValue=Number(point?.interval);
+      const responseValue=Number(point?.responseTime);
+      if(Number.isFinite(intervalValue)){
+        intervalTotal+=intervalValue;
+        intervalCount++;
+      }
+      if(Number.isFinite(responseValue)){
+        responseTotal+=responseValue;
+        responseCount++;
+      }
+    }
+
+    const intervalAverage=intervalCount
+      ? intervalTotal/intervalCount
       : NaN;
-    const responseAverage=responseValues.length
-      ? responseValues.reduce((sum,value)=>sum+value,0)/responseValues.length
+    const responseAverage=responseCount
+      ? responseTotal/responseCount
       : NaN;
-    const startQuestion=Number(slice[0]?.questionNumber)||start+1;
-    const endQuestion=Number(slice[slice.length-1]?.questionNumber)||start+slice.length;
+    const startQuestion=Number(tracePoints[start]?.questionNumber)||start+1;
+    const endQuestion=Number(tracePoints[end-1]?.questionNumber)||end;
 
     blocks.push({
       startIndex:start,
-      endIndex:start + slice.length - 1,
+      endIndex:end-1,
       startQuestion,
       endQuestion,
-      blockSize:slice.length,
+      blockSize:end-start,
       interval:intervalAverage,
       responseTime:responseAverage,
       summary:startQuestion===endQuestion
@@ -2112,7 +2335,13 @@ function buildLatestIntervalOverviewBlocks(tracePoints,chartWidth=720){
     });
   }
 
-  return { blockSize, blocks };
+  const result={ blockSize, blocks };
+  const nextCache=cachedByBlockSize || new Map();
+  nextCache.set(blockSize,{ pointCount, result });
+  if(!cachedByBlockSize){
+    latestIntervalOverviewCache.set(tracePoints,nextCache);
+  }
+  return result;
 }
 
 function buildLatestIntervalDetailPoints(tracePoints,block){
@@ -2559,6 +2788,7 @@ function renderLineChart(container,config){
 
   config.pointMeta=mergedPointMeta;
   if(interactive){
+    cacheChartRenderState(container,config,width,height);
     state.points=mergedPointMeta;
     bindChartInteractions(container,config);
     applyChartState(container,config);
@@ -2738,6 +2968,7 @@ function renderOverlayLineChart(container,config){
   state.chartKey=container.id || container;
   state.seriesConfig=seriesConfigs;
 
+  cacheChartRenderState(container,config,width,height);
   bindChartInteractions(container,config);
   applyChartState(container,config);
 }
@@ -3445,8 +3676,8 @@ function setFeedbackIndicators(color,count){
   updateFeedbackUI();
 }
 
-// FIX: continuously update time
 function tickIntervalTime(){
+  intervalStatsTimerId=null;
   if(!gameRunning) return;
   if(!showIntervalTiming) return;
 
@@ -3459,21 +3690,37 @@ function tickIntervalTime(){
   currentIntervalStart=now;
   updateIntervalStats();
 
-  requestAnimationFrame(tickIntervalTime);
+  intervalStatsTimerId=setTimeout(tickIntervalTime,100);
+}
+
+function getSortedIntervalKeys(){
+  if(intervalKeysDirty){
+    sortedIntervalKeys=Object.keys(intervalCounts).sort((a,b)=>b-a);
+    intervalKeysDirty=false;
+  }
+  return sortedIntervalKeys;
 }
 
 function renderIntervalStatsInto(target){
   if(!target) return;
-  target.innerHTML="";
+  const keys=getSortedIntervalKeys();
 
-  Object.keys(intervalCounts)
-    .sort((a,b)=>b-a)
-    .forEach(k=>{
-      const time=(intervalTime[k]||0)/1000;
-      const div=document.createElement("div");
-      div.textContent = k + "ms: " + intervalCounts[k] + "  —  " + time.toFixed(1) + "s";
-      target.appendChild(div);
-    });
+  keys.forEach((key,index)=>{
+    const time=(intervalTime[key]||0)/1000;
+    const text=key + "ms: " + intervalCounts[key] + "  —  " + time.toFixed(1) + "s";
+    let row=target.children[index];
+    if(!row){
+      row=document.createElement("div");
+      target.appendChild(row);
+    }
+    if(row.textContent!==text){
+      row.textContent=text;
+    }
+  });
+
+  while(target.children.length>keys.length){
+    target.lastElementChild.remove();
+  }
 }
 
 function updateIntervalStats(){
@@ -3486,7 +3733,9 @@ function updateIntervalStats(){
   }
 
   renderIntervalStatsInto(intervalStats);
-  renderIntervalStatsInto(resultsIntervalStats);
+  if(!gameRunning){
+    renderIntervalStatsInto(resultsIntervalStats);
+  }
 }
 
 function getThresholds(){
@@ -3497,27 +3746,76 @@ function getThresholds(){
 }
 
 function updateIntervalInputConstraints(){
-  const maximum=clampInteger(maximumIntervalInput.value,parseInt(defaultSettings.maximumInterval,10),201,3000);
   const step=clampInteger(intervalIncrementSelect.value,parseInt(defaultSettings.intervalIncrement,10),10,100);
-  const minimum=clampInteger(minimumIntervalInput.value,Math.min(parseInt(defaultSettings.minimumInterval,10),maximum-1),100,maximum-1);
-  const starting=clampInteger(startingIntervalInput.value,minimum,minimum,maximum);
 
   maximumIntervalInput.min="201";
   maximumIntervalInput.max="3000";
   maximumIntervalInput.step=String(step);
-  startingIntervalInput.min=String(minimum);
-  startingIntervalInput.max=String(maximum);
+  startingIntervalInput.min="100";
+  startingIntervalInput.max="3000";
   startingIntervalInput.step=String(step);
   minimumIntervalInput.min="100";
-  minimumIntervalInput.max=String(maximum-1);
+  minimumIntervalInput.max="2999";
   minimumIntervalInput.step=String(step);
+}
 
-  if(Number(startingIntervalInput.value)<minimum || Number(startingIntervalInput.value)>maximum){
-    startingIntervalInput.value=String(starting);
+function getIntervalInputBounds(input){
+  const minimum=Number(minimumIntervalInput.value);
+  const maximum=Number(maximumIntervalInput.value);
+  const starting=Number(startingIntervalInput.value);
+
+  if(input===startingIntervalInput){
+    return {
+      min:Number.isFinite(minimum) ? minimum : 100,
+      max:Number.isFinite(maximum) ? maximum : 3000
+    };
   }
-  if(Number(minimumIntervalInput.value)>=maximum){
-    minimumIntervalInput.value=String(minimum);
+  if(input===minimumIntervalInput){
+    return {
+      min:100,
+      max:(Number.isFinite(maximum) ? maximum : 3000)-1
+    };
   }
+  return {
+    min:Math.max(
+      201,
+      Number.isFinite(minimum) ? minimum+1 : 201,
+      Number.isFinite(starting) ? starting : 201
+    ),
+    max:3000
+  };
+}
+
+function isValidIntervalInput(input){
+  const value=Number(input.value);
+  if(!Number.isInteger(value)) return false;
+
+  const bounds=getIntervalInputBounds(input);
+  if(value<bounds.min || value>bounds.max) return false;
+
+  if(input===minimumIntervalInput){
+    return value<Number(maximumIntervalInput.value);
+  }
+  if(input===maximumIntervalInput){
+    return value>Number(minimumIntervalInput.value) && value>=Number(startingIntervalInput.value);
+  }
+  return true;
+}
+
+function rememberIntervalInputValue(input){
+  input.dataset.lastAcceptedValue=input.value;
+}
+
+function validateIntervalInput(input){
+  const previous=input.dataset.lastAcceptedValue;
+  if(isValidIntervalInput(input)){
+    rememberIntervalInputValue(input);
+    saveSettings();
+    return true;
+  }
+
+  if(previous!==undefined) input.value=previous;
+  return false;
 }
 
 function stepIntervalInput(inputId,direction){
@@ -3528,14 +3826,13 @@ function stepIntervalInput(inputId,direction){
   const current=Number(input.value);
   if(!Number.isFinite(current)) return;
 
-  const minimum=Number(input.min);
-  const maximum=Number(input.max);
+  const bounds=getIntervalInputBounds(input);
   const delta=direction==="up" ? step : -step;
-  const next=Math.max(minimum,Math.min(maximum,current+delta));
+  const next=Math.max(bounds.min,Math.min(bounds.max,current+delta));
   if(next===current) return;
 
   input.value=String(next);
-  input.dispatchEvent(new Event("input",{ bubbles:true }));
+  input.dispatchEvent(new Event("change",{ bubbles:true }));
 }
 
 function changeInterval(newInterval){
@@ -3555,6 +3852,9 @@ function changeInterval(newInterval){
   if(showIntervalTiming){
     currentIntervalStart=now;
 
+    if(!Object.prototype.hasOwnProperty.call(intervalCounts,interval)){
+      intervalKeysDirty=true;
+    }
     intervalCounts[interval]=(intervalCounts[interval]||0)+1;
 
     updateIntervalStats();
@@ -3583,8 +3883,8 @@ function adjustDifficulty(){
 }
 
 function recordScoredItem(isCorrect,responseTime,traceIndex=sessionIntervalTrace.length-1){
-  feedback.push(isCorrect);
-  responseTimes.push(Math.max(0,responseTime));
+  scoredItemCount++;
+  totalResponseTime+=Math.max(0,responseTime);
   if(isCorrect) correctAnswers++;
   updateLatestTraceResponseTime(responseTime,traceIndex);
 }
@@ -3605,7 +3905,7 @@ function createQuestionState(startedAt){
   return {
     startedAt,
     responseInterval:interval,
-    expectedAnswer:numbers.length>=2 ? getExpectedAnswer(numbers[numbers.length-2],numbers[numbers.length-1]) : null,
+    expectedAnswer:stimulusCount>=2 ? getExpectedAnswer(previousStimulusNumber,currentStimulusNumber) : null,
     traceIndex,
     resolved:false
   };
@@ -3690,9 +3990,8 @@ function formatDuration(ms){
 }
 
 function renderResults(){
-  const totalItems=feedback.length;
+  const totalItems=scoredItemCount;
   const accuracy=totalItems?correctAnswers/totalItems*100:0;
-  const totalResponseTime=responseTimes.reduce((sum,time)=>sum+time,0);
   const averageResponseTime=totalItems?totalResponseTime/totalItems:0;
   const duration=Math.max(0,sessionEndedAt-sessionStartedAt);
   const totalQuestionsAsked=Math.max(0,totalItems-(excludeLastQuestionFromCount?1:0));
@@ -3741,16 +4040,18 @@ function runStimulus(){
   const now=getClockTime();
   lastStimulusAt=now;
   clearPendingAnswer();
-  numbers.push(num);
+  previousStimulusNumber=currentStimulusNumber;
+  currentStimulusNumber=num;
+  stimulusCount++;
   sessionIntervalTrace.push({
-    questionNumber:numbers.length,
+    questionNumber:stimulusCount,
     interval,
     timestamp:now,
     responseTime:null
   });
   playStimulusAudio(num);
 
-  if(numbers.length>=2){
+  if(stimulusCount>=2){
     awaitingAnswer=true;
     responseStartedAt=now;
     responseInterval=interval;
@@ -3767,16 +4068,29 @@ function runStimulus(){
 }
 
 function updateTimer(){
+  countdownTimerId=null;
   if(!gameRunning||endCondition!=="timer")return;
   const remainingMs=endTime-Date.now();
   const r=Math.max(0,Math.ceil(remainingMs/1000));
-  document.getElementById("timeLeft").textContent=r;
-  if(remainingMs<=0) stopGame("completed"); else requestAnimationFrame(updateTimer);
+  const displayValue=String(r);
+  if(timeLeft.textContent!==displayValue){
+    timeLeft.textContent=displayValue;
+  }
+  if(remainingMs<=0){
+    stopGame("completed");
+    return;
+  }
+
+  const nextBoundaryDelay=remainingMs-((r-1)*1000)+1;
+  countdownTimerId=setTimeout(updateTimer,Math.max(1,Math.min(1000,nextBoundaryDelay)));
 }
 
 async function startGame(){
   if(sessionState!=="idle") return;
 
+  validateIntervalInput(startingIntervalInput);
+  validateIntervalInput(minimumIntervalInput);
+  validateIntervalInput(maximumIntervalInput);
   saveSettings();
   setSessionState("starting");
   currentSessionId=generateSessionId();
@@ -3800,12 +4114,18 @@ async function startGame(){
   if(sessionState!=="starting") return;
   retainOnlyVoiceCache(selectedVoice);
 
-  numbers=[]; feedback=[]; responseTimes=[];
+  scoredItemCount=0;
+  totalResponseTime=0;
+  stimulusCount=0;
+  previousStimulusNumber=null;
+  currentStimulusNumber=null;
   correctStreak=0; wrongStreak=0;
   correctAnswers=0;
   excludeLastQuestionFromCount=false;
   sessionOutcome="Completed";
   intervalCounts={}; intervalTime={};
+  sortedIntervalKeys=[];
+  intervalKeysDirty=true;
   sessionIntervalTrace=[];
   resetQuestionStates();
   resetFeedbackIndicators();
@@ -3850,14 +4170,22 @@ function stopGame(reason="manual"){
   if(sessionState!=="active"&&sessionState!=="starting") return;
 
   sessionOutcome=reason==="manual" ? "Manually exited" : "Completed";
-  excludeLastQuestionFromCount=awaitingAnswer && numbers.length>=2 && answer.value.trim()==="";
+  excludeLastQuestionFromCount=awaitingAnswer && stimulusCount>=2 && answer.value.trim()==="";
   sessionEndedAt=Date.now();
   gameRunning=false;
   clearTimeout(timeoutId);
+  if(intervalStatsTimerId!==null){
+    clearTimeout(intervalStatsTimerId);
+    intervalStatsTimerId=null;
+  }
+  if(countdownTimerId!==null){
+    clearTimeout(countdownTimerId);
+    countdownTimerId=null;
+  }
   stopStimulusAudioPlayback();
   void closeBeepAudioContext();
 
-  if(awaitingAnswer && numbers.length>=2 && activeQuestionState){
+  if(awaitingAnswer && stimulusCount>=2 && activeQuestionState){
     if(answer.value.trim()===""){
       updateLatestTraceResponseTime(responseInterval||interval,activeQuestionState.traceIndex);
     }else{
@@ -3892,7 +4220,7 @@ function stopGame(reason="manual"){
 
 function checkInputLive(event){
   if(sessionState!=="active") return;
-  if(!awaitingAnswer || numbers.length<2 || !activeQuestionState || activeQuestionState.resolved) return;
+  if(!awaitingAnswer || stimulusCount<2 || !activeQuestionState || activeQuestionState.resolved) return;
 
   const submittedValue=answer.value.trim();
   if(submittedValue==="") return;
@@ -3992,21 +4320,20 @@ const historyPaginationSummary=document.getElementById("historyPaginationSummary
 const historyPaginationIndicator=document.getElementById("historyPaginationIndicator");
 const historyPrevPageBtn=document.getElementById("historyPrevPageBtn");
 const historyNextPageBtn=document.getElementById("historyNextPageBtn");
-const settingsControls=[
-  startingIntervalInput,
-  maximumIntervalInput,
-  minimumIntervalInput,
+const liveSettingsControls=[
   intervalIncrementSelect,
   durationInput,
-  endConditionSelect,
   targetCorrectInput,
-  modeSelect,
   correctThresholdInput,
   incorrectThresholdInput,
+  playbackSpeedSelect,
+  beepVolumeSelect
+];
+const committedSettingsControls=[
+  endConditionSelect,
+  modeSelect,
   showAdvancedSettingsToggle,
   voiceSelect,
-  playbackSpeedSelect,
-  beepVolumeSelect,
   beepToggle,
   themeToggle,
   showIntervalTimingToggle
@@ -4167,9 +4494,16 @@ document.addEventListener("visibilitychange",()=>{
     restoreAnswerFocus();
   }
 });
-settingsControls.forEach(control=>{
+liveSettingsControls.forEach(control=>{
   control.addEventListener("input",handleSettingsChange);
+});
+committedSettingsControls.forEach(control=>{
   control.addEventListener("change",handleSettingsChange);
+});
+[startingIntervalInput,maximumIntervalInput,minimumIntervalInput].forEach(input=>{
+  input.addEventListener("change",()=>{
+    validateIntervalInput(input);
+  });
 });
 document.querySelectorAll(".interval-step-button").forEach(button=>{
   button.addEventListener("click",()=>{
@@ -4182,6 +4516,13 @@ voiceSelect.addEventListener("focus",()=>{
 document.addEventListener("visibilitychange",()=>{
   if(document.visibilityState==="visible"){
     void refreshVoiceLibrary();
+  }else if(settingsSaveTimerId!==null){
+    saveSettings();
+  }
+});
+window.addEventListener("pagehide",()=>{
+  if(settingsSaveTimerId!==null){
+    saveSettings();
   }
 });
 async function initializeApp(){
