@@ -42,6 +42,14 @@
       <strong id="resultAverageResponse">0 ms</strong>
     </div>
     <div class="result-metric">
+      <span>Median Correct Response Time</span>
+      <strong id="resultMedianResponse">N/A</strong>
+    </div>
+    <div class="result-metric">
+      <span>Correct Response-Time IQR</span>
+      <strong id="resultResponseTimeIqr">N/A</strong>
+    </div>
+    <div class="result-metric">
       <span>Total Session Duration</span>
       <strong id="resultDuration">0s</strong>
     </div>
@@ -92,8 +100,8 @@
   </div>
 
   <div class="history-utility-actions">
-    <button id="exportHistoryBtn" class="secondary-button history-json-button" type="button">Export JSON</button>
-    <button id="importHistoryBtn" class="secondary-button history-json-button" type="button">Import JSON</button>
+    <button id="exportHistoryBtn" class="secondary-button history-json-button" type="button">Export Backup</button>
+    <button id="importHistoryBtn" class="secondary-button history-json-button" type="button">Import Backup</button>
     <input id="importHistoryInput" class="hidden" type="file" accept="application/json,.json">
   </div>
 
@@ -156,6 +164,23 @@
     <div class="history-section-header">
       <div class="section-header">Session History</div>
       <div class="history-section-actions">
+        <div id="historyStatsHelp" class="history-stats-help">
+          <button id="historyStatsInfoBtn" class="icon-button info-button" type="button" aria-expanded="false" aria-controls="historyStatsGlossary" aria-label="Open response-time statistics glossary" title="Response-time statistics glossary">i</button>
+          <div id="historyStatsGlossary" class="history-stats-glossary hidden" role="region" aria-label="Response-time statistics glossary">
+            <div class="history-stats-glossary-title">Response-time statistics</div>
+            <dl class="history-stats-glossary-list">
+              <dt>Median RT (correct)</dt>
+              <dd>The middle response time among correct responses only.</dd>
+              <dt>RT Spread (IQR)</dt>
+              <dd>The spread of the middle 50% of correct response times. Smaller values generally indicate more consistency.</dd>
+              <dt>Average RT (all)</dt>
+              <dd>The average across all scored questions. Incorrect or missed responses count as the full interval time.</dd>
+              <dt>—</dt>
+              <dd>Not recorded for sessions created before these statistics were added.</dd>
+            </dl>
+          </div>
+        </div>
+        <button id="exportHistoryCsvBtn" class="secondary-button history-list-export-button" type="button" aria-label="Export session report as CSV" title="Export session report as CSV">Export Session Report</button>
         <button id="refreshSessionsBtn" class="icon-square-button history-refresh-icon" type="button" aria-label="Refresh session history" title="Refresh session history">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M20 12a8 8 0 0 1-14.9 4M4 12a8 8 0 0 1 14.9-4" />
@@ -344,6 +369,7 @@
                   type="button"
                   aria-expanded="false"
                   aria-label="Thresholds help"
+                  title="Thresholds help"
                 >i</button>
                 <span class="tooltip-box" role="tooltip">Correct threshold: consecutive correct answers before the interval gets shorter. Incorrect threshold: consecutive incorrect answers before it gets longer.</span>
               </span>

@@ -1,6 +1,7 @@
 let interval=1000, startingInterval=1000, maximumInterval=1000, minimumInterval=200;
 let intervalIncrement=100;
 let scoredItemCount=0, totalResponseTime=0;
+let correctResponseTimes=[];
 let stimulusCount=0, previousStimulusNumber=null, currentStimulusNumber=null;
 let correctStreak=0, wrongStreak=0;
 let gameRunning=false, timeoutId, endTime;
@@ -18,6 +19,8 @@ let sessionOutcome="Completed";
 let currentSessionId="";
 let historyVisible=false;
 let historyFilterVisible=false;
+let historyStatsGlossaryPinned=false;
+let historyStatsGlossaryEscapeDismissed=false;
 let sessionIntervalTrace=[];
 let activeQuestionState=null;
 let historyChartMode=null;
@@ -92,6 +95,48 @@ function parsePositiveInteger(value,fallback,min=1){
 
 function coercePositiveNumber(value,fallback,min=1){
   return Math.max(min,Number(value)||Number(fallback)||min);
+}
+
+function normalizeOptionalNonNegativeNumber(value){
+  if(value===null || value===undefined || value==="") return null;
+  const parsed=Number(value);
+  return Number.isFinite(parsed) && parsed>=0 ? parsed : null;
+}
+
+function calculateMedianFromSortedValues(sortedValues){
+  if(!sortedValues.length) return null;
+  const middle=Math.floor(sortedValues.length/2);
+  return sortedValues.length%2
+    ? sortedValues[middle]
+    : (sortedValues[middle-1]+sortedValues[middle])/2;
+}
+
+function calculatePercentile(sortedValues,percentile){
+  if(!sortedValues.length) return null;
+  const position=(sortedValues.length-1)*percentile;
+  const lower=Math.floor(position);
+  const upper=Math.ceil(position);
+  if(lower===upper) return sortedValues[lower];
+  const weight=position-lower;
+  return sortedValues[lower] + (sortedValues[upper]-sortedValues[lower])*weight;
+}
+
+function calculateResponseTimeStats(values){
+  const sorted=(Array.isArray(values) ? values : [])
+    .filter(value=>Number.isFinite(Number(value)) && Number(value)>=0)
+    .map(Number)
+    .sort((a,b)=>a-b);
+  if(!sorted.length){
+    return { medianResponseTimeMs:null, responseTimeIqrMs:null };
+  }
+
+  const medianResponseTimeMs=calculateMedianFromSortedValues(sorted);
+  const firstQuartile=calculatePercentile(sorted,0.25);
+  const thirdQuartile=calculatePercentile(sorted,0.75);
+  return {
+    medianResponseTimeMs,
+    responseTimeIqrMs:thirdQuartile-firstQuartile
+  };
 }
 
 function clampBeepVolumePercent(value,fallback=defaultSettings.beepVolume){
@@ -320,6 +365,10 @@ function applyAdvancedSettingsVisibility(isVisible){
   advancedSettingsPanel.classList.toggle("hidden",!isVisible);
   advancedSections.classList.toggle("hidden",!isVisible);
   modeField.classList.toggle("hidden",!isVisible);
+  if(!isVisible && thresholdHelp){
+    thresholdHelp.classList.remove("tooltip-open");
+  }
+  syncThresholdInfoAria();
 }
 
 function applySettings(settings){
@@ -644,6 +693,8 @@ function normalizeHistoryRecord(record){
   const correctAnswers=Number(record?.correctAnswers)||0;
   const totalQuestionsAsked=Number(record?.totalQuestionsAsked)||0;
   const averageResponseTimeMs=Number(record?.averageResponseTimeMs)||0;
+  const medianResponseTimeMs=normalizeOptionalNonNegativeNumber(record?.medianResponseTimeMs);
+  const responseTimeIqrMs=normalizeOptionalNonNegativeNumber(record?.responseTimeIqrMs);
   const rawCorrectThreshold=record?.correctThreshold ?? record?.thresholds?.correct;
   const rawIncorrectThreshold=record?.incorrectThreshold ?? record?.thresholds?.incorrect;
   const rawMode=record?.arithmeticMode ?? record?.mode;
@@ -663,7 +714,7 @@ function normalizeHistoryRecord(record){
 
   return {
     ...record,
-    schemaVersion:1,
+    schemaVersion:2,
     sessionId:record?.sessionId || generateSessionId(),
     startedAt,
     endedAt,
@@ -675,6 +726,8 @@ function normalizeHistoryRecord(record){
     correctAnswers,
     totalQuestionsAsked,
     averageResponseTimeMs,
+    medianResponseTimeMs,
+    responseTimeIqrMs,
     correctThreshold,
     incorrectThreshold,
     startingInterval,
@@ -1407,7 +1460,7 @@ const sessionHistoryStore=(()=>{
   };
 })();
 
-function buildSessionRecord(){
+function buildSessionRecord(responseTimeStats){
   const totalItems=scoredItemCount;
   const totalQuestionsAsked=Math.max(0,totalItems-(excludeLastQuestionFromCount?1:0));
   const thresholds=getThresholds();
@@ -1424,6 +1477,7 @@ function buildSessionRecord(){
     correctAnswers,
     totalQuestionsAsked,
     averageResponseTimeMs:totalItems?totalResponseTime/totalItems:0,
+    ...responseTimeStats,
     correctThreshold:thresholds.correct,
     incorrectThreshold:thresholds.incorrect,
     startingInterval,
@@ -3071,6 +3125,26 @@ function formatHistoryPageIndicator(pageData){
   return `Page ${pageIndex + 1} of ${pageCount}`;
 }
 
+function setHistoryStatsGlossaryVisible(isVisible){
+  if(!historyStatsGlossary || !historyStatsInfoBtn) return;
+  historyStatsGlossary.classList.toggle("hidden",!isVisible);
+  historyStatsInfoBtn.setAttribute("aria-expanded",String(!!isVisible));
+}
+
+function closeHistoryStatsGlossary(){
+  historyStatsGlossaryPinned=false;
+  setHistoryStatsGlossaryVisible(false);
+}
+
+function syncThresholdInfoAria(){
+  if(!thresholdHelp || !thresholdInfoBtn) return;
+  const advancedSettingsVisible=!advancedSettingsPanel || !advancedSettingsPanel.classList.contains("hidden");
+  const isVisible=advancedSettingsVisible && (thresholdHelp.classList.contains("tooltip-open")
+    || thresholdHelp.matches(":hover")
+    || thresholdHelp.contains(document.activeElement));
+  thresholdInfoBtn.setAttribute("aria-expanded",String(isVisible));
+}
+
 function updateHistoryPaginationControls(pageData){
   const pageCount=Number(pageData?.pageCount)||0;
   if(historyPaginationSummary){
@@ -3170,47 +3244,90 @@ function renderHistorySessionsSection(viewData){
     top.appendChild(date);
     top.appendChild(status);
 
-    const meta=document.createElement("div");
-    meta.className="history-item-meta";
+    const statsGrid=document.createElement("div");
+    statsGrid.className="history-item-stats";
 
-    const accuracy=document.createElement("span");
-    accuracy.textContent="Accuracy: " + formatPercent(Number(session.accuracy)||0);
+    const totalQuestionsAsked=Number(session.totalQuestionsAsked)||0;
+    const correctAnswers=Number(session.correctAnswers)||0;
+    const historyStatisticDefinitions=[
+      {
+        label:"Accuracy",
+        value:formatPercent(Number(session.accuracy)||0),
+        accessibleLabel:"Accuracy"
+      },
+      {
+        label:"Median RT",
+        value:formatHistoryResponseTimeStatistic(session.medianResponseTimeMs),
+        accessibleLabel:"Median correct response time"
+      },
+      {
+        label:"RT IQR",
+        value:formatHistoryResponseTimeStatistic(session.responseTimeIqrMs),
+        accessibleLabel:"Correct response-time interquartile range"
+      },
+      {
+        label:"Average RT",
+        value:Math.round(Number(session.averageResponseTimeMs)||0) + " ms",
+        accessibleLabel:"Average response time"
+      },
+      {
+        label:"Correct",
+        value:correctAnswers + " / " + totalQuestionsAsked,
+        accessibleLabel:"Correct answers out of total questions"
+      },
+      {
+        label:"Duration",
+        value:formatDuration(Number(session.durationMs)||0),
+        accessibleLabel:"Session duration"
+      }
+    ];
 
-    const duration=document.createElement("span");
-    duration.textContent="Duration: " + formatDuration(Number(session.durationMs)||0);
+    historyStatisticDefinitions.forEach(statistic=>{
+      const stat=document.createElement("div");
+      stat.className="history-item-stat";
+      stat.setAttribute("role","group");
+      stat.setAttribute("aria-label",statistic.accessibleLabel + ": " + statistic.value);
 
-    const averageResponse=document.createElement("span");
-    averageResponse.textContent="Average Response Time: " + Math.round(Number(session.averageResponseTimeMs)||0) + " ms";
+      const label=document.createElement("span");
+      label.className="history-item-stat-label";
+      label.textContent=statistic.label;
 
-    const correct=document.createElement("span");
-    correct.textContent="Correct: " + (Number(session.correctAnswers)||0);
+      const value=document.createElement("strong");
+      value.className="history-item-stat-value";
+      value.textContent=statistic.value;
 
-    const questions=document.createElement("span");
-    questions.textContent="Total Questions: " + (Number(session.totalQuestionsAsked)||0);
+      stat.appendChild(label);
+      stat.appendChild(value);
+      statsGrid.appendChild(stat);
+    });
 
-    const mode=document.createElement("span");
-    mode.textContent="Mode: " + formatArithmeticModeLabel(session.arithmeticMode || defaultSettings.mode);
+    const details=document.createElement("div");
+    details.className="history-item-details";
 
-    const endConditionLabel=document.createElement("span");
-    endConditionLabel.textContent="End: " + ((session.endCondition || defaultSettings.endCondition) === "correct" ? "Correct answers" : "Timer");
+    const detailsText=[
+      formatArithmeticModeLabel(session.arithmeticMode || defaultSettings.mode),
+      (session.endCondition || defaultSettings.endCondition) === "correct" ? "Correct-answer goal" : "Timer",
+      "Thresholds " + formatThresholdSummary(Number(session.correctThreshold)||4, Number(session.incorrectThreshold)||4)
+    ];
+    detailsText.forEach((text,index)=>{
+      const detail=document.createElement("span");
+      detail.className="history-item-detail";
+      detail.textContent=text;
+      details.appendChild(detail);
+      if(index<detailsText.length-1){
+        const separator=document.createElement("span");
+        separator.className="history-item-detail-separator";
+        separator.setAttribute("aria-hidden","true");
+        separator.textContent="•";
+        details.appendChild(separator);
+      }
+    });
 
-    const thresholds=document.createElement("span");
-    thresholds.textContent="Thresholds: " + formatThresholdSummary(Number(session.correctThreshold)||4, Number(session.incorrectThreshold)||4);
-
-    meta.appendChild(accuracy);
-    meta.appendChild(duration);
-    meta.appendChild(averageResponse);
-    meta.appendChild(correct);
-    meta.appendChild(questions);
-    meta.appendChild(mode);
-    meta.appendChild(endConditionLabel);
-    meta.appendChild(thresholds);
+    const metadataRow=document.createElement("div");
+    metadataRow.className="history-item-metadata-row";
 
     const trendRow=document.createElement("div");
     trendRow.className="history-item-trend";
-
-    const trendLabel=document.createElement("span");
-    trendLabel.textContent="Trend inclusion";
 
     const trendButton=document.createElement("button");
     trendButton.type="button";
@@ -3221,12 +3338,14 @@ function renderHistorySessionsSection(viewData){
       void toggleHistorySessionTrendInclusion(session,trendButton);
     };
 
-    trendRow.appendChild(trendLabel);
     trendRow.appendChild(trendButton);
 
     item.appendChild(top);
-    item.appendChild(meta);
-    item.appendChild(trendRow);
+    item.appendChild(statsGrid);
+    metadataRow.appendChild(details);
+    metadataRow.appendChild(trendRow);
+
+    item.appendChild(metadataRow);
     recentSessionsList.appendChild(item);
   });
 }
@@ -3884,7 +4003,11 @@ function adjustDifficulty(){
 
 function recordScoredItem(isCorrect,responseTime,traceIndex=sessionIntervalTrace.length-1){
   scoredItemCount++;
-  totalResponseTime+=Math.max(0,responseTime);
+  const normalizedResponseTime=Math.max(0,responseTime);
+  totalResponseTime+=normalizedResponseTime;
+  if(isCorrect){
+    correctResponseTimes.push(normalizedResponseTime);
+  }
   if(isCorrect) correctAnswers++;
   updateLatestTraceResponseTime(responseTime,traceIndex);
 }
@@ -3989,7 +4112,72 @@ function formatDuration(ms){
   return minutes + "m " + seconds + "s";
 }
 
-function renderResults(){
+function formatResponseTimeStatistic(value){
+  const normalized=normalizeOptionalNonNegativeNumber(value);
+  return normalized===null ? "N/A" : Math.round(normalized) + " ms";
+}
+
+function formatHistoryResponseTimeStatistic(value){
+  const normalized=normalizeOptionalNonNegativeNumber(value);
+  return normalized===null ? "—" : Math.round(normalized) + " ms";
+}
+
+function formatCsvTimestamp(value){
+  const timestamp=Number(value);
+  if(!Number.isFinite(timestamp) || timestamp<=0) return "";
+  const date=new Date(timestamp);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : "";
+}
+
+function formatExportFileDate(date=new Date()){
+  const year=date.getFullYear();
+  const month=String(date.getMonth()+1).padStart(2,"0");
+  const day=String(date.getDate()).padStart(2,"0");
+  return `${year}-${month}-${day}`;
+}
+
+function escapeCsvCell(value){
+  if(value===null || value===undefined) return "";
+  const text=String(value);
+  const safeText=typeof value==="string" && /^\s*[=+\-@]/.test(text)
+    ? "'" + text
+    : text;
+  return /[",\r\n]/.test(safeText) ? `"${safeText.replace(/"/g,'""')}"` : safeText;
+}
+
+function buildSessionHistoryCsv(sessions){
+  const columns=[
+    { header:"sessionId", getValue:session=>session.sessionId },
+    { header:"startedAt", getValue:session=>formatCsvTimestamp(session.startedAt) },
+    { header:"endedAt", getValue:session=>formatCsvTimestamp(session.endedAt) },
+    { header:"status", getValue:session=>session.status },
+    { header:"arithmeticMode", getValue:session=>session.arithmeticMode },
+    { header:"endCondition", getValue:session=>session.endCondition },
+    { header:"durationMs", getValue:session=>session.durationMs },
+    { header:"accuracyPercent", getValue:session=>session.accuracy },
+    { header:"correctAnswers", getValue:session=>session.correctAnswers },
+    { header:"totalQuestionsAsked", getValue:session=>session.totalQuestionsAsked },
+    { header:"averageResponseTimeMs", getValue:session=>session.averageResponseTimeMs },
+    { header:"medianResponseTimeMs", getValue:session=>session.medianResponseTimeMs },
+    { header:"responseTimeIqrMs", getValue:session=>session.responseTimeIqrMs },
+    { header:"correctThreshold", getValue:session=>session.correctThreshold },
+    { header:"incorrectThreshold", getValue:session=>session.incorrectThreshold },
+    { header:"startingInterval", getValue:session=>session.startingInterval },
+    { header:"maximumInterval", getValue:session=>session.maximumInterval },
+    { header:"minimumInterval", getValue:session=>session.minimumInterval },
+    { header:"intervalIncrement", getValue:session=>session.intervalIncrement },
+    { header:"voice", getValue:session=>session.voice },
+    { header:"playbackSpeed", getValue:session=>session.playbackSpeed },
+    { header:"includeInTrends", getValue:session=>session.includeInTrends }
+  ];
+  const rows=[columns.map(column=>escapeCsvCell(column.header)).join(",")];
+  (Array.isArray(sessions) ? sessions : []).forEach(session=>{
+    rows.push(columns.map(column=>escapeCsvCell(column.getValue(session))).join(","));
+  });
+  return rows.join("\r\n") + "\r\n";
+}
+
+function renderResults(responseTimeStats){
   const totalItems=scoredItemCount;
   const accuracy=totalItems?correctAnswers/totalItems*100:0;
   const averageResponseTime=totalItems?totalResponseTime/totalItems:0;
@@ -3998,6 +4186,8 @@ function renderResults(){
 
   resultAccuracy.textContent=formatPercent(accuracy);
   resultAverageResponse.textContent=Math.round(averageResponseTime) + " ms";
+  resultMedianResponse.textContent=formatResponseTimeStatistic(responseTimeStats.medianResponseTimeMs);
+  resultResponseTimeIqr.textContent=formatResponseTimeStatistic(responseTimeStats.responseTimeIqrMs);
   resultDuration.textContent=formatDuration(duration);
   resultCorrect.textContent=correctAnswers.toString();
   resultQuestions.textContent=totalQuestionsAsked.toString();
@@ -4116,6 +4306,7 @@ async function startGame(){
 
   scoredItemCount=0;
   totalResponseTime=0;
+  correctResponseTimes=[];
   stimulusCount=0;
   previousStimulusNumber=null;
   currentStimulusNumber=null;
@@ -4208,9 +4399,11 @@ function stopGame(reason="manual"){
   updateIntervalStats();
 
   if(endCondition==="timer") timeLeft.textContent="0";
-  renderResults();
-  const sessionRecord=buildSessionRecord();
+  const responseTimeStats=calculateResponseTimeStats(correctResponseTimes);
+  renderResults(responseTimeStats);
+  const sessionRecord=buildSessionRecord(responseTimeStats);
   const latestTraceRecord=buildLatestTraceRecord();
+  correctResponseTimes=[];
   if(shouldStoreSession(sessionRecord)){
     void sessionHistoryStore.saveLatestTrace(latestTraceRecord).catch(()=>{});
     void sessionHistoryStore.saveSession(sessionRecord).catch(()=>{});
@@ -4278,6 +4471,8 @@ const sessionView=document.getElementById("sessionView");
 const resultsView=document.getElementById("resultsView");
 const resultAccuracy=document.getElementById("resultAccuracy");
 const resultAverageResponse=document.getElementById("resultAverageResponse");
+const resultMedianResponse=document.getElementById("resultMedianResponse");
+const resultResponseTimeIqr=document.getElementById("resultResponseTimeIqr");
 const resultDuration=document.getElementById("resultDuration");
 const resultCorrect=document.getElementById("resultCorrect");
 const resultQuestions=document.getElementById("resultQuestions");
@@ -4288,6 +4483,9 @@ const historyView=document.getElementById("historyView");
 const historyBtn=document.getElementById("historyBtn");
 const clearSessionsOnlyBtn=document.getElementById("clearSessionsOnlyBtn");
 const clearAllHistoryBtn=document.getElementById("clearAllHistoryBtn");
+const historyStatsHelp=document.getElementById("historyStatsHelp");
+const historyStatsInfoBtn=document.getElementById("historyStatsInfoBtn");
+const historyStatsGlossary=document.getElementById("historyStatsGlossary");
 const historyFilterBtn=document.getElementById("historyFilterBtn");
 const historyFilterCountBadge=document.getElementById("historyFilterCountBadge");
 const resetHistoryFiltersBtn=document.getElementById("resetHistoryFiltersBtn");
@@ -4295,6 +4493,7 @@ const backFromHistoryBtn=document.getElementById("backFromHistoryBtn");
 const refreshTrendChartsBtn=document.getElementById("refreshTrendChartsBtn");
 const refreshSessionsBtn=document.getElementById("refreshSessionsBtn");
 const exportHistoryBtn=document.getElementById("exportHistoryBtn");
+const exportHistoryCsvBtn=document.getElementById("exportHistoryCsvBtn");
 const importHistoryBtn=document.getElementById("importHistoryBtn");
 const importHistoryInput=document.getElementById("importHistoryInput");
 const historyFiltersPanel=document.getElementById("historyFiltersPanel");
@@ -4376,7 +4575,41 @@ clearAllHistoryBtn.onclick=async()=>{
 historyFilterBtn.onclick=()=>{
   toggleHistoryFiltersVisible();
 };
-backFromHistoryBtn.onclick=()=>setHistoryVisible(false);
+historyStatsHelp.onpointerenter=()=>{
+  setHistoryStatsGlossaryVisible(true);
+};
+historyStatsHelp.onpointerleave=()=>{
+  if(!historyStatsGlossaryPinned){
+    setHistoryStatsGlossaryVisible(false);
+  }
+};
+historyStatsHelp.onfocusin=()=>{
+  if(historyStatsGlossaryEscapeDismissed){
+    historyStatsGlossaryEscapeDismissed=false;
+    return;
+  }
+  setHistoryStatsGlossaryVisible(true);
+};
+historyStatsHelp.onfocusout=()=>{
+  setTimeout(()=>{
+    if(!historyStatsGlossaryPinned && !historyStatsHelp.contains(document.activeElement)){
+      setHistoryStatsGlossaryVisible(false);
+    }
+  },0);
+};
+historyStatsInfoBtn.onclick=event=>{
+  event.stopPropagation();
+  historyStatsGlossaryPinned=!historyStatsGlossaryPinned;
+  if(historyStatsGlossaryPinned || historyStatsHelp.matches(":hover") || historyStatsHelp.contains(document.activeElement)){
+    setHistoryStatsGlossaryVisible(true);
+  }else{
+    setHistoryStatsGlossaryVisible(false);
+  }
+};
+backFromHistoryBtn.onclick=()=>{
+  closeHistoryStatsGlossary();
+  setHistoryVisible(false);
+};
 refreshTrendChartsBtn.onclick=()=>{
   void refreshHistoryTrendCharts();
 };
@@ -4391,7 +4624,23 @@ exportHistoryBtn.onclick=async()=>{
     const url=URL.createObjectURL(blob);
     const link=document.createElement("a");
     link.href=url;
-    link.download="cct-session-history.json";
+    link.download=`cct-data-backup-${formatExportFileDate()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }catch(e){}
+};
+exportHistoryCsvBtn.onclick=async()=>{
+  try{
+    const filtersSnapshot={ ...historyFilters };
+    await historyTrendUpdateChain;
+    const sessions=applyHistoryFilters(await sessionHistoryStore.getAllSessions(),filtersSnapshot);
+    const blob=new Blob(["\uFEFF",buildSessionHistoryCsv(sessions)],{ type:"text/csv;charset=utf-8" });
+    const url=URL.createObjectURL(blob);
+    const link=document.createElement("a");
+    link.href=url;
+    link.download=`cct-session-report-${formatExportFileDate()}.csv`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -4449,24 +4698,55 @@ beepTestBtn.onclick=()=>{
 };
 normalThresholdPresetBtn.onclick=()=>applyThresholdPreset(4,4);
 highAccuracyPresetBtn.onclick=()=>applyThresholdPreset(5,3);
+thresholdHelp.onpointerenter=()=>{
+  syncThresholdInfoAria();
+};
+thresholdHelp.onpointerleave=()=>{
+  setTimeout(syncThresholdInfoAria,0);
+};
+thresholdHelp.onfocusin=()=>{
+  syncThresholdInfoAria();
+};
+thresholdHelp.onfocusout=()=>{
+  setTimeout(syncThresholdInfoAria,0);
+};
 thresholdInfoBtn.onclick=event=>{
   event.stopPropagation();
-  const isOpen=thresholdHelp.classList.toggle("tooltip-open");
-  thresholdInfoBtn.setAttribute("aria-expanded",String(isOpen));
+  thresholdHelp.classList.toggle("tooltip-open");
+  syncThresholdInfoAria();
 };
 document.addEventListener("click",event=>{
   if(!thresholdHelp.contains(event.target)){
     thresholdHelp.classList.remove("tooltip-open");
-    thresholdInfoBtn.setAttribute("aria-expanded","false");
+    syncThresholdInfoAria();
   }
   if(historyFilterVisible && historyFiltersPanel && historyFilterBtn && !historyFiltersPanel.contains(event.target) && !historyFilterBtn.contains(event.target)){
     toggleHistoryFiltersVisible(false);
+  }
+  if(historyStatsHelp && !historyStatsHelp.contains(event.target)){
+    closeHistoryStatsGlossary();
+  }
+});
+document.addEventListener("keydown",event=>{
+  if(event.key!=="Escape") return;
+  if(historyStatsGlossary && !historyStatsGlossary.classList.contains("hidden")){
+    const infoButtonAlreadyFocused=document.activeElement===historyStatsInfoBtn;
+    closeHistoryStatsGlossary();
+    if(!infoButtonAlreadyFocused){
+      historyStatsGlossaryEscapeDismissed=true;
+      historyStatsInfoBtn.focus();
+    }
+  }
+  if(thresholdHelp && thresholdHelp.classList.contains("tooltip-open")){
+    thresholdHelp.classList.remove("tooltip-open");
+    syncThresholdInfoAria();
+    thresholdInfoBtn.focus();
   }
 });
 showAdvancedSettingsToggle.addEventListener("change",()=>{
   if(!showAdvancedSettingsToggle.checked){
     thresholdHelp.classList.remove("tooltip-open");
-    thresholdInfoBtn.setAttribute("aria-expanded","false");
+    syncThresholdInfoAria();
   }
 });
 answer.addEventListener("input",checkInputLive);
