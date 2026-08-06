@@ -175,9 +175,15 @@ h1 {
 }
 
 .section-note {
+  margin: 0;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.n-back-setting {
+  display: grid;
+  gap: 6px;
 }
 
 .advanced-settings {
@@ -350,13 +356,13 @@ input[type="number"]::-webkit-outer-spin-button {
   margin-top: 0;
 }
 
-.threshold-help {
+.settings-tooltip {
   position: relative;
   display: inline-flex;
   align-items: center;
 }
 
-.threshold-help .tooltip-box {
+.settings-tooltip .tooltip-box {
   position: absolute;
   right: 0;
   top: calc(100% + 8px);
@@ -378,12 +384,15 @@ input[type="number"]::-webkit-outer-spin-button {
   transition: opacity 120ms ease, transform 120ms ease;
 }
 
-.threshold-help:hover .tooltip-box,
-.threshold-help:focus-within .tooltip-box,
-.threshold-help.tooltip-open .tooltip-box {
+.settings-tooltip .info-button:hover + .tooltip-box,
+.settings-tooltip.tooltip-pinned .tooltip-box {
   opacity: 1;
-  pointer-events: auto;
   transform: translateY(0);
+}
+
+.settings-tooltip.tooltip-pinned .tooltip-box {
+  border-color: var(--accent);
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.2);
 }
 
 .child-field {
@@ -685,6 +694,11 @@ button:disabled {
   line-height: 1.4;
 }
 
+.history-stats-help.tooltip-pinned .history-stats-glossary {
+  border-color: var(--accent);
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.2);
+}
+
 .history-stats-glossary-title {
   color: var(--text);
   font-size: 13px;
@@ -710,6 +724,12 @@ button:disabled {
 .history-chart-mode-field {
   min-width: 260px;
   max-width: 320px;
+}
+
+.history-chart-nback-field {
+  min-width: 220px;
+  max-width: 240px;
+  grid-template-columns: minmax(0, 1fr) 110px;
 }
 
 .history-chart-mode-note {

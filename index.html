@@ -125,7 +125,17 @@
           <option value="difference">Difference (absolute)</option>
         </select>
       </label>
-      <div id="historyChartModeNote" class="history-chart-mode-note">Charts show one arithmetic mode at a time.</div>
+      <label class="field history-chart-nback-field">
+        <span>N-back level</span>
+        <select id="historyChartNBackLevelSelect">
+          <option value="1">1-back</option>
+          <option value="2">2-back</option>
+          <option value="3">3-back</option>
+          <option value="4">4-back</option>
+          <option value="5">5-back</option>
+        </select>
+      </label>
+      <div id="historyChartModeNote" class="history-chart-mode-note">Charts show one arithmetic mode and one N-back level at a time.</div>
     </div>
     <div class="analytics-grid">
       <section class="chart-card">
@@ -214,6 +224,17 @@
               </select>
             </label>
             <label class="field history-filter-field">
+              <span>N-back Level</span>
+              <select id="historyNBackFilter">
+                <option value="all">All</option>
+                <option value="1">1-back</option>
+                <option value="2">2-back</option>
+                <option value="3">3-back</option>
+                <option value="4">4-back</option>
+                <option value="5">5-back</option>
+              </select>
+            </label>
+            <label class="field history-filter-field">
               <span>Trend Inclusion</span>
               <select id="historyTrendFilter">
                 <option value="all">All</option>
@@ -287,6 +308,25 @@
               <option value="difference">Difference (absolute) (abs(A - B))</option>
             </select>
           </label>
+          <div class="advanced-only hidden n-back-setting" id="nBackLevelField">
+            <div class="field">
+              <span>
+                <label for="nBackLevelInput">N-back level <strong class="advanced-badge">Advanced</strong></label>
+                <span class="n-back-help settings-tooltip">
+                  <button
+                    id="nBackInfoBtn"
+                    class="icon-button info-button"
+                    type="button"
+                    aria-expanded="false"
+                    aria-label="N-back level help"
+                    title="N-back level help"
+                  >i</button>
+                  <span id="nBackTooltip" class="tooltip-box" role="tooltip">Sets how many trials back to compare with the latest number. 1-back uses the previous number; 2-back uses the number from two trials earlier.</span>
+                </span>
+              </span>
+              <input type="number" id="nBackLevelInput" value="1" min="1" max="5" step="1" aria-describedby="nBackTooltip">
+            </div>
+          </div>
         </section>
 
         <div id="advancedSections" class="advanced-sections hidden">
@@ -328,7 +368,7 @@
           <label class="field">
             <span>Starting Interval (ms)</span>
             <div class="interval-number-control">
-              <input type="number" id="startingInterval" value="3000" min="200" max="3000" step="1">
+              <input type="number" id="startingInterval" value="3000" min="100" max="3000" step="1">
               <span class="interval-step-buttons">
                 <button type="button" class="interval-step-button" data-interval-input="startingInterval" data-interval-direction="up" aria-label="Increase starting interval">▲</button>
                 <button type="button" class="interval-step-button" data-interval-input="startingInterval" data-interval-direction="down" aria-label="Decrease starting interval">▼</button>
@@ -338,7 +378,7 @@
           <label class="field">
             <span>Maximum Interval (ms)</span>
             <div class="interval-number-control">
-              <input type="number" id="maximumInterval" value="3000" min="201" max="3000" step="1">
+              <input type="number" id="maximumInterval" value="3000" min="100" max="3000" step="1">
               <span class="interval-step-buttons">
                 <button type="button" class="interval-step-button" data-interval-input="maximumInterval" data-interval-direction="up" aria-label="Increase maximum interval">▲</button>
                 <button type="button" class="interval-step-button" data-interval-input="maximumInterval" data-interval-direction="down" aria-label="Decrease maximum interval">▼</button>
@@ -362,7 +402,7 @@
             </label>
             <div class="section-header advanced-subsection-header">
               <span>Threshold Settings</span>
-              <span class="threshold-help">
+              <span class="threshold-help settings-tooltip">
                 <button
                   id="thresholdInfoBtn"
                   class="icon-button info-button"

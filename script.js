@@ -2,7 +2,7 @@ let interval=1000, startingInterval=1000, maximumInterval=1000, minimumInterval=
 let intervalIncrement=100;
 let scoredItemCount=0, totalResponseTime=0;
 let correctResponseTimes=[];
-let stimulusCount=0, previousStimulusNumber=null, currentStimulusNumber=null;
+let stimulusCount=0, stimulusHistory=[];
 let correctStreak=0, wrongStreak=0;
 let gameRunning=false, timeoutId, endTime;
 let awaitingAnswer=false, beepEnabled=true;
@@ -12,9 +12,10 @@ let stimulusScheduleSerial=0;
 let lastStimulusAt=0;
 let endCondition="timer", targetCorrect=50, correctAnswers=0;
 let arithmeticMode="addition";
+let nBackLevel=1;
 let sessionStartedAt=0, sessionEndedAt=0;
 let responseStartedAt=0, responseInterval=0;
-let excludeLastQuestionFromCount=false;
+let excludeLastQuestionFromTrace=false;
 let sessionOutcome="Completed";
 let currentSessionId="";
 let historyVisible=false;
@@ -25,6 +26,8 @@ let sessionIntervalTrace=[];
 let activeQuestionState=null;
 let historyChartMode=null;
 let historyChartModeIsUserSelected=false;
+let historyChartNBackLevel=null;
+let historyChartNBackLevelIsUserSelected=false;
 let historyPageIndex=0;
 let historyTrendRefreshToken=0;
 let historySessionRefreshToken=0;
@@ -36,6 +39,7 @@ const HISTORY_PAGE_SIZE=20;
 const historyFilters={
   status:"all",
   mode:"all",
+  nBackLevel:"all",
   trendInclusion:"all"
 };
 const EMPTY_HISTORY_STATS={
@@ -45,6 +49,8 @@ const EMPTY_HISTORY_STATS={
 };
 const SETTINGS_KEY="cctSettings";
 const ARITHMETIC_MODES=new Set(["addition","multiplication","subtraction","difference"]);
+const MIN_N_BACK_LEVEL=1;
+const MAX_N_BACK_LEVEL=5;
 const DEFAULT_BEEP_GAIN=0.12;
 const DEFAULT_BEEP_VOLUME_PERCENT=50;
 const MAX_BEEP_VOLUME_PERCENT=100;
@@ -60,6 +66,7 @@ const defaultSettings={
   endCondition:"timer",
   targetCorrect:"500",
   mode:"addition",
+  nBackLevel:"1",
   voice:"nathan",
   playbackSpeed:"1",
   beepVolume:String(DEFAULT_BEEP_VOLUME_PERCENT),
@@ -154,6 +161,13 @@ function normalizeBeepVolumeSetting(value,fallback=defaultSettings.beepVolume){
   return parsed;
 }
 
+function normalizeNBackLevel(value,fallback=defaultSettings.nBackLevel){
+  const parsed=Number(value);
+  const fallbackParsed=Number(fallback);
+  const resolved=Number.isInteger(parsed) ? parsed : (Number.isInteger(fallbackParsed) ? fallbackParsed : MIN_N_BACK_LEVEL);
+  return Math.max(MIN_N_BACK_LEVEL,Math.min(MAX_N_BACK_LEVEL,resolved));
+}
+
 function getBeepGain(){
   const level=normalizeBeepVolumeSetting(beepVolume)/MAX_BEEP_VOLUME_PERCENT;
   return Math.pow(level,2)*MAX_BEEP_GAIN;
@@ -172,14 +186,11 @@ function resolveVoiceKey(value,fallbackKey=defaultSettings.voice){
 }
 
 function normalizeSavedSettings(parsed){
-  const startingFallback=clampInteger(parsed.startingInterval ?? parsed.interval,defaultSettings.startingInterval,200,3000);
-  const maximumIntervalValue=Math.max(
-    201,
-    startingFallback,
-    clampInteger(parsed.maximumInterval,startingFallback,201,3000)
-  );
-  const minimumFallback=Math.min(parseInt(defaultSettings.minimumInterval,10),maximumIntervalValue-1);
-  const minimumInterval=String(clampInteger(parsed.minimumInterval,minimumFallback,100,maximumIntervalValue-1));
+  const startingFallback=clampInteger(parsed.startingInterval ?? parsed.interval,defaultSettings.startingInterval,100,3000);
+  const minimumFallback=clampInteger(parsed.minimumInterval,defaultSettings.minimumInterval,100,3000);
+  const maximumFallback=clampInteger(parsed.maximumInterval,defaultSettings.maximumInterval,100,3000);
+  const maximumIntervalValue=Math.max(100,minimumFallback,startingFallback,maximumFallback);
+  const minimumInterval=String(minimumFallback);
   const startingInterval=String(Math.max(
     parseInt(minimumInterval,10),
     Math.min(startingFallback,maximumIntervalValue)
@@ -191,6 +202,7 @@ function normalizeSavedSettings(parsed){
   const duration=String(Math.max(1,clampInteger(parsed.duration,defaultSettings.duration,1,9999)));
   const targetCorrect=String(Math.max(1,clampInteger(parsed.targetCorrect,defaultSettings.targetCorrect,1,9999)));
   const mode=ARITHMETIC_MODES.has(parsed.mode) ? parsed.mode : defaultSettings.mode;
+  const nBackLevel=String(normalizeNBackLevel(parsed.nBackLevel));
   const voice=resolveVoiceKey(parsed.voice,defaultSettings.voice);
   const beepVolume=String(normalizeBeepVolumeSetting(parsed.beepVolume,defaultSettings.beepVolume));
 
@@ -206,6 +218,7 @@ function normalizeSavedSettings(parsed){
     duration,
     targetCorrect,
     mode,
+    nBackLevel,
     voice,
     playbackSpeed:String(Math.max(1,Math.min(1.5,parseFloat(parsed.playbackSpeed)||parseFloat(defaultSettings.playbackSpeed)))),
     beepVolume,
@@ -286,6 +299,7 @@ function getSettingsFromForm(){
     endCondition:endConditionSelect.value,
     targetCorrect:targetCorrectInput.value,
     mode:modeSelect.value,
+    nBackLevel:String(normalizeNBackLevel(nBackLevelInput.value)),
     voice:resolveVoiceKey(voiceSelect.value || selectedVoice),
     playbackSpeed:playbackSpeedSelect.value,
     beepVolume:beepVolumeSelect.value,
@@ -365,10 +379,15 @@ function applyAdvancedSettingsVisibility(isVisible){
   advancedSettingsPanel.classList.toggle("hidden",!isVisible);
   advancedSections.classList.toggle("hidden",!isVisible);
   modeField.classList.toggle("hidden",!isVisible);
+  nBackLevelField.classList.toggle("hidden",!isVisible);
   if(!isVisible && thresholdHelp){
-    thresholdHelp.classList.remove("tooltip-open");
+    thresholdHelp.classList.remove("tooltip-pinned");
+  }
+  if(!isVisible && nBackHelp){
+    nBackHelp.classList.remove("tooltip-pinned");
   }
   syncThresholdInfoAria();
+  syncNBackInfoAria();
 }
 
 function applySettings(settings){
@@ -386,6 +405,8 @@ function applySettings(settings){
   endConditionSelect.value=settings.endCondition;
   targetCorrectInput.value=settings.targetCorrect;
   applyArithmeticMode(settings.mode);
+  nBackLevel=normalizeNBackLevel(settings.nBackLevel);
+  nBackLevelInput.value=String(nBackLevel);
   selectedVoice=resolveVoiceKey(settings.voice);
   voiceSelect.value=selectedVoice;
   playbackSpeedSelect.value=Math.max(1,Math.min(1.5,parseFloat(settings.playbackSpeed)||1));
@@ -415,6 +436,9 @@ function handleSettingsChange(event){
     applyTheme(themeToggle.checked);
   }else if(target===modeSelect){
     applyArithmeticMode(modeSelect.value);
+  }else if(target===nBackLevelInput){
+    nBackLevel=normalizeNBackLevel(nBackLevelInput.value);
+    nBackLevelInput.value=String(nBackLevel);
   }else if(target===voiceSelect){
     selectedVoice=resolveVoiceKey(voiceSelect.value);
     voiceSelect.value=selectedVoice;
@@ -529,6 +553,13 @@ const HISTORY_FILTER_DEFS={
       return value==="all" || (session.arithmeticMode || defaultSettings.mode)===value;
     }
   },
+  nBackLevel:{
+    defaultValue:"all",
+    values:new Set(["all","1","2","3","4","5"]),
+    matches(session,value){
+      return value==="all" || normalizeNBackLevel(session?.nBackLevel)===Number(value);
+    }
+  },
   trendInclusion:{
     defaultValue:"all",
     values:new Set(["all","included","excluded"]),
@@ -567,6 +598,15 @@ function setHistoryChartMode(mode){
   }
 }
 
+function setHistoryChartNBackLevel(level){
+  const resolvedLevel=normalizeNBackLevel(level);
+  historyChartNBackLevel=resolvedLevel;
+  historyChartNBackLevelIsUserSelected=true;
+  if(historyChartNBackLevelSelect){
+    historyChartNBackLevelSelect.value=String(resolvedLevel);
+  }
+}
+
 function ensureHistoryChartMode(fallbackMode){
   const resolvedFallback=ARITHMETIC_MODES.has(fallbackMode) ? fallbackMode : defaultSettings.mode;
   if(!historyChartModeIsUserSelected || !ARITHMETIC_MODES.has(historyChartMode)){
@@ -576,15 +616,34 @@ function ensureHistoryChartMode(fallbackMode){
   if(historyChartModeSelect){
     historyChartModeSelect.value=resolvedMode;
   }
-  if(historyChartModeNote){
-    historyChartModeNote.textContent=`Charts show ${formatArithmeticModeLabel(resolvedMode)} sessions only.`;
-  }
   return resolvedMode;
+}
+
+function ensureHistoryChartNBackLevel(fallbackLevel){
+  const resolvedFallback=normalizeNBackLevel(fallbackLevel);
+  if(!historyChartNBackLevelIsUserSelected || historyChartNBackLevel===null){
+    historyChartNBackLevel=resolvedFallback;
+  }
+  const resolvedLevel=normalizeNBackLevel(historyChartNBackLevel,resolvedFallback);
+  if(historyChartNBackLevelSelect){
+    historyChartNBackLevelSelect.value=String(resolvedLevel);
+  }
+  return resolvedLevel;
+}
+
+function ensureHistoryChartSelection(fallbackMode,fallbackNBackLevel){
+  const resolvedMode=ensureHistoryChartMode(fallbackMode);
+  const resolvedNBackLevel=ensureHistoryChartNBackLevel(fallbackNBackLevel);
+  if(historyChartModeNote){
+    historyChartModeNote.textContent=`Charts show ${formatArithmeticModeLabel(resolvedMode)} · ${formatNBackLevel(resolvedNBackLevel)} sessions only.`;
+  }
+  return { mode:resolvedMode, nBackLevel:resolvedNBackLevel };
 }
 
 function syncHistoryFilterControls(){
   historyStatusFilter.value=historyFilters.status;
   historyModeFilter.value=historyFilters.mode;
+  historyNBackFilter.value=historyFilters.nBackLevel;
   historyTrendFilter.value=historyFilters.trendInclusion;
   historyFilterBtn.setAttribute("aria-expanded",String(historyFilterVisible));
   const activeFilterCount=getActiveHistoryFilterCount();
@@ -667,6 +726,10 @@ function formatArithmeticModeLabel(mode){
   }
 }
 
+function formatNBackLevel(value){
+  return normalizeNBackLevel(value) + "-back";
+}
+
 function getDefaultTrendInclusion(status){
   return status==="Manually exited" ? false : true;
 }
@@ -698,6 +761,7 @@ function normalizeHistoryRecord(record){
   const rawCorrectThreshold=record?.correctThreshold ?? record?.thresholds?.correct;
   const rawIncorrectThreshold=record?.incorrectThreshold ?? record?.thresholds?.incorrect;
   const rawMode=record?.arithmeticMode ?? record?.mode;
+  const rawNBackLevel=record?.nBackLevel ?? record?.nbackLevel;
   const status=record?.status==="Manually exited" ? "Manually exited" : "Completed";
   const correctThreshold=coercePositiveNumber(rawCorrectThreshold,defaultSettings.correctThreshold);
   const incorrectThreshold=coercePositiveNumber(rawIncorrectThreshold,defaultSettings.incorrectThreshold);
@@ -720,6 +784,7 @@ function normalizeHistoryRecord(record){
     endedAt,
     status,
     arithmeticMode:ARITHMETIC_MODES.has(rawMode) ? rawMode : defaultSettings.mode,
+    nBackLevel:normalizeNBackLevel(rawNBackLevel),
     endCondition:record?.endCondition || defaultSettings.endCondition,
     durationMs:Number.isFinite(durationMs) ? Math.max(0,durationMs) : Math.max(0,endedAt-startedAt),
     accuracy,
@@ -766,6 +831,7 @@ function normalizeLatestTraceRecord(record){
     endedAt:Number(record?.endedAt)||Number(record?.startedAt)||Date.now(),
     status:record?.status==="Manually exited" ? "Manually exited" : "Completed",
     totalQuestionsAsked:Math.max(0,Number(record?.totalQuestionsAsked)||0),
+    nBackLevel:normalizeNBackLevel(record?.nBackLevel),
     trace:normalizedTrace
   };
 }
@@ -1049,16 +1115,31 @@ const sessionHistoryStore=(()=>{
     }
   }
 
-  async function getMostRecentHistoryMode(){
+  function getDefaultHistorySettings(){
+    return {
+      mode:defaultSettings.mode,
+      nBackLevel:normalizeNBackLevel(defaultSettings.nBackLevel)
+    };
+  }
+
+  function getMostRecentFallbackHistorySettings(){
+    const latestSession=getSortedFallbackSessions().find(session=>ARITHMETIC_MODES.has(session?.arithmeticMode));
+    return latestSession
+      ? {
+          mode:latestSession.arithmeticMode,
+          nBackLevel:normalizeNBackLevel(latestSession.nBackLevel)
+        }
+      : getDefaultHistorySettings();
+  }
+
+  async function getMostRecentHistorySettings(){
     if(!supportsIndexedDB){
-      const latestSession=getSortedFallbackSessions().find(session=>ARITHMETIC_MODES.has(session?.arithmeticMode));
-      return latestSession ? latestSession.arithmeticMode : defaultSettings.mode;
+      return getMostRecentFallbackHistorySettings();
     }
 
     await migrateBackupSnapshotToIndexedDb();
     if(hasBackupSnapshot){
-      const latestSession=getSortedFallbackSessions().find(session=>ARITHMETIC_MODES.has(session?.arithmeticMode));
-      return latestSession ? latestSession.arithmeticMode : defaultSettings.mode;
+      return getMostRecentFallbackHistorySettings();
     }
 
     try{
@@ -1078,23 +1159,31 @@ const sessionHistoryStore=(()=>{
         request.onerror=()=>reject(request.error || new Error("Failed to read most recent session"));
       });
       return latestSession && ARITHMETIC_MODES.has(latestSession.arithmeticMode)
-        ? latestSession.arithmeticMode
-        : defaultSettings.mode;
+        ? {
+            mode:latestSession.arithmeticMode,
+            nBackLevel:normalizeNBackLevel(latestSession.nBackLevel)
+          }
+        : getDefaultHistorySettings();
     }catch(e){
-      const latestSession=getSortedFallbackSessions().find(session=>ARITHMETIC_MODES.has(session?.arithmeticMode));
-      return latestSession ? latestSession.arithmeticMode : defaultSettings.mode;
+      return getMostRecentFallbackHistorySettings();
     }
   }
 
-  async function getTrendData(mode){
+  async function getMostRecentHistoryMode(){
+    const settings=await getMostRecentHistorySettings();
+    return settings.mode;
+  }
+
+  async function getTrendData(mode,nBackLevel){
     const resolvedMode=ARITHMETIC_MODES.has(mode) ? mode : defaultSettings.mode;
+    const resolvedNBackLevel=normalizeNBackLevel(nBackLevel);
     if(!supportsIndexedDB){
-      return buildTrendDataForSessions(getSortedFallbackSessions(),resolvedMode);
+      return buildTrendDataForSessions(getSortedFallbackSessions(),resolvedMode,resolvedNBackLevel);
     }
 
     await migrateBackupSnapshotToIndexedDb();
     if(hasBackupSnapshot){
-      return buildTrendDataForSessions(getSortedFallbackSessions(),resolvedMode);
+      return buildTrendDataForSessions(getSortedFallbackSessions(),resolvedMode,resolvedNBackLevel);
     }
 
     try{
@@ -1114,7 +1203,7 @@ const sessionHistoryStore=(()=>{
           }
 
           const session=normalizeHistoryRecord(cursor.value);
-          if(!isTrendEligibleSession(session) || !isSessionInMode(session,resolvedMode)){
+          if(!isSessionInTrendGroup(session,resolvedMode,resolvedNBackLevel)){
             cursor.continue();
             return;
           }
@@ -1130,9 +1219,14 @@ const sessionHistoryStore=(()=>{
       const accuracyPoints=finalizeDailyTrendBuckets(accuracyBuckets);
       const responsePoints=finalizeDailyTrendBuckets(responseBuckets);
 
-      return { accuracyPoints, responsePoints, mode:resolvedMode };
+      return {
+        accuracyPoints,
+        responsePoints,
+        mode:resolvedMode,
+        nBackLevel:resolvedNBackLevel
+      };
     }catch(e){
-      return buildTrendDataForSessions(getSortedFallbackSessions(),resolvedMode);
+      return buildTrendDataForSessions(getSortedFallbackSessions(),resolvedMode,resolvedNBackLevel);
     }
   }
 
@@ -1450,6 +1544,7 @@ const sessionHistoryStore=(()=>{
     getAllSessions,
     getLatestTrace,
     getMostRecentHistoryMode,
+    getMostRecentHistorySettings,
     getSessionPage,
     getTrendData,
     clearAll,
@@ -1462,7 +1557,7 @@ const sessionHistoryStore=(()=>{
 
 function buildSessionRecord(responseTimeStats){
   const totalItems=scoredItemCount;
-  const totalQuestionsAsked=Math.max(0,totalItems-(excludeLastQuestionFromCount?1:0));
+  const totalQuestionsAsked=Math.max(0,totalItems);
   const thresholds=getThresholds();
 
   return normalizeHistoryRecord({
@@ -1471,6 +1566,7 @@ function buildSessionRecord(responseTimeStats){
     endedAt:sessionEndedAt,
     status:sessionOutcome,
     arithmeticMode,
+    nBackLevel,
     endCondition,
     durationMs:Math.max(0,sessionEndedAt-sessionStartedAt),
     accuracy:totalItems?correctAnswers/totalItems*100:0,
@@ -1491,10 +1587,10 @@ function buildSessionRecord(responseTimeStats){
 }
 
 function buildLatestTraceRecord(){
-  const firstTraceIndex=2;
+  const firstTraceIndex=nBackLevel;
   const lastTraceIndex=Math.max(
     firstTraceIndex,
-    sessionIntervalTrace.length-(excludeLastQuestionFromCount ? 1 : 0)
+    sessionIntervalTrace.length-(excludeLastQuestionFromTrace ? 1 : 0)
   );
   const trimmedTrace=new Array(Math.max(0,lastTraceIndex-firstTraceIndex));
   for(let sourceIndex=firstTraceIndex; sourceIndex<lastTraceIndex; sourceIndex++){
@@ -1512,6 +1608,7 @@ function buildLatestTraceRecord(){
     startedAt:sessionStartedAt,
     endedAt:sessionEndedAt,
     status:sessionOutcome,
+    nBackLevel,
     totalQuestionsAsked,
     trace:trimmedTrace
   });
@@ -1520,7 +1617,7 @@ function buildLatestTraceRecord(){
 function shouldStoreSession(record){
   const durationMs=Number(record?.durationMs)||0;
   const correctAnswersCount=Number(record?.correctAnswers)||0;
-  return durationMs>=30000 && correctAnswersCount>=10;
+  return durationMs>=30000 && correctAnswersCount>=5;
 }
 
 const sessionDateTimeFormatter=new Intl.DateTimeFormat(undefined,{
@@ -1694,12 +1791,19 @@ function isSessionInMode(session,mode){
   return (session?.arithmeticMode || defaultSettings.mode)===mode;
 }
 
-function buildTrendDataForSessions(sessions,mode){
+function isSessionInTrendGroup(session,mode,nBackLevel){
+  return isTrendEligibleSession(session)
+    && isSessionInMode(session,mode)
+    && normalizeNBackLevel(session?.nBackLevel)===normalizeNBackLevel(nBackLevel);
+}
+
+function buildTrendDataForSessions(sessions,mode,nBackLevel){
+  const resolvedNBackLevel=normalizeNBackLevel(nBackLevel);
   const accuracyBuckets=new Map();
   const responseBuckets=new Map();
 
   sessions.forEach(session=>{
-    if(!isTrendEligibleSession(session) || !isSessionInMode(session,mode)) return;
+    if(!isSessionInTrendGroup(session,mode,resolvedNBackLevel)) return;
     addDailyTrendValues(
       accuracyBuckets,
       responseBuckets,
@@ -1711,7 +1815,8 @@ function buildTrendDataForSessions(sessions,mode){
   return {
     accuracyPoints:finalizeDailyTrendBuckets(accuracyBuckets),
     responsePoints:finalizeDailyTrendBuckets(responseBuckets),
-    mode
+    mode,
+    nBackLevel:resolvedNBackLevel
   };
 }
 
@@ -3027,9 +3132,11 @@ function renderOverlayLineChart(container,config){
   applyChartState(container,config);
 }
 
-function renderHistoryCharts(trendData,latestTrace,fallbackMode){
+function renderHistoryCharts(trendData,latestTrace,fallbackMode,fallbackNBackLevel){
   latestHistoryChartContext={ stats:null, latestTrace };
-  const historyMode=ensureHistoryChartMode(fallbackMode);
+  const chartSelection=ensureHistoryChartSelection(fallbackMode,fallbackNBackLevel);
+  const historyMode=chartSelection.mode;
+  const historyNBackLevel=chartSelection.nBackLevel;
   const dailyAccuracyPoints=Array.isArray(trendData?.accuracyPoints) ? trendData.accuracyPoints : [];
   const dailyResponsePoints=Array.isArray(trendData?.responsePoints) ? trendData.responsePoints : [];
   const dailyYears=new Set([...dailyAccuracyPoints,...dailyResponsePoints].map(point=>new Date(point.dayStart).getFullYear()));
@@ -3088,7 +3195,7 @@ function renderHistoryCharts(trendData,latestTrace,fallbackMode){
       interactive:false
     });
   }else{
-    const emptyMessage=`No ${formatArithmeticModeLabel(historyMode)} sessions saved yet. Finish a session in this mode to see trends over time.`;
+    const emptyMessage=`No ${formatArithmeticModeLabel(historyMode)} ${formatNBackLevel(historyNBackLevel)} sessions saved yet. Finish a session at this level to see trends over time.`;
     clearChartInteractions(accuracyTrendChart);
     clearChartInteractions(responseTimeTrendChart);
     ensureChartSurface(accuracyTrendChart).innerHTML=`<div class="chart-empty">${escapeSvgText(emptyMessage)}</div>`;
@@ -3106,8 +3213,8 @@ function renderHistoryCharts(trendData,latestTrace,fallbackMode){
   renderLatestIntervalChart(latestTrace);
 }
 
-function renderHistoryChartsSection(trendData,latestTrace,fallbackMode){
-  renderHistoryCharts(trendData,latestTrace,fallbackMode);
+function renderHistoryChartsSection(trendData,latestTrace,fallbackMode,fallbackNBackLevel){
+  renderHistoryCharts(trendData,latestTrace,fallbackMode,fallbackNBackLevel);
 }
 
 function formatHistoryPageSummary(pageData){
@@ -3131,18 +3238,32 @@ function setHistoryStatsGlossaryVisible(isVisible){
   historyStatsInfoBtn.setAttribute("aria-expanded",String(!!isVisible));
 }
 
+function setHistoryStatsGlossaryPinned(isPinned){
+  historyStatsGlossaryPinned=!!isPinned;
+  if(historyStatsHelp){
+    historyStatsHelp.classList.toggle("tooltip-pinned",historyStatsGlossaryPinned);
+  }
+}
+
 function closeHistoryStatsGlossary(){
-  historyStatsGlossaryPinned=false;
+  setHistoryStatsGlossaryPinned(false);
   setHistoryStatsGlossaryVisible(false);
 }
 
 function syncThresholdInfoAria(){
   if(!thresholdHelp || !thresholdInfoBtn) return;
   const advancedSettingsVisible=!advancedSettingsPanel || !advancedSettingsPanel.classList.contains("hidden");
-  const isVisible=advancedSettingsVisible && (thresholdHelp.classList.contains("tooltip-open")
-    || thresholdHelp.matches(":hover")
-    || thresholdHelp.contains(document.activeElement));
+  const isVisible=advancedSettingsVisible && (thresholdHelp.classList.contains("tooltip-pinned")
+    || thresholdInfoBtn.matches(":hover"));
   thresholdInfoBtn.setAttribute("aria-expanded",String(isVisible));
+}
+
+function syncNBackInfoAria(){
+  if(!nBackHelp || !nBackInfoBtn) return;
+  const advancedSettingsVisible=!advancedSettingsPanel || !advancedSettingsPanel.classList.contains("hidden");
+  const isVisible=advancedSettingsVisible && (nBackHelp.classList.contains("tooltip-pinned")
+    || nBackInfoBtn.matches(":hover"));
+  nBackInfoBtn.setAttribute("aria-expanded",String(isVisible));
 }
 
 function updateHistoryPaginationControls(pageData){
@@ -3306,6 +3427,7 @@ function renderHistorySessionsSection(viewData){
 
     const detailsText=[
       formatArithmeticModeLabel(session.arithmeticMode || defaultSettings.mode),
+      formatNBackLevel(session.nBackLevel),
       (session.endCondition || defaultSettings.endCondition) === "correct" ? "Correct-answer goal" : "Timer",
       "Thresholds " + formatThresholdSummary(Number(session.correctThreshold)||4, Number(session.incorrectThreshold)||4)
     ];
@@ -3386,8 +3508,9 @@ function renderHistoryView(viewData){
   const pageData=viewData?.pageData || createEmptyHistoryPageData();
   const trendData=viewData?.trendData || createEmptyTrendData();
   const fallbackMode=viewData?.fallbackMode || defaultSettings.mode;
+  const fallbackNBackLevel=normalizeNBackLevel(viewData?.fallbackNBackLevel);
 
-  renderHistoryChartsSection(trendData,latestTrace,fallbackMode);
+  renderHistoryChartsSection(trendData,latestTrace,fallbackMode,fallbackNBackLevel);
   renderHistorySessionsSection({ stats, pageData });
 }
 
@@ -3395,17 +3518,17 @@ async function refreshHistoryTrendCharts(){
   const refreshToken=++historyTrendRefreshToken;
   try{
     await historyTrendUpdateChain;
-    const [latestTrace,fallbackMode]=await Promise.all([
+    const [latestTrace,fallbackSettings]=await Promise.all([
       sessionHistoryStore.getLatestTrace(),
-      sessionHistoryStore.getMostRecentHistoryMode()
+      sessionHistoryStore.getMostRecentHistorySettings()
     ]);
-    const resolvedMode=ensureHistoryChartMode(fallbackMode);
-    const trendData=await sessionHistoryStore.getTrendData(resolvedMode);
+    const chartSelection=ensureHistoryChartSelection(fallbackSettings.mode,fallbackSettings.nBackLevel);
+    const trendData=await sessionHistoryStore.getTrendData(chartSelection.mode,chartSelection.nBackLevel);
     if(refreshToken!==historyTrendRefreshToken) return;
-    renderHistoryChartsSection(trendData,latestTrace,fallbackMode);
+    renderHistoryChartsSection(trendData,latestTrace,fallbackSettings.mode,fallbackSettings.nBackLevel);
   }catch(e){
     if(refreshToken!==historyTrendRefreshToken) return;
-    renderHistoryChartsSection(createEmptyTrendData(),null,defaultSettings.mode);
+    renderHistoryChartsSection(createEmptyTrendData(),null,defaultSettings.mode,defaultSettings.nBackLevel);
   }
 }
 
@@ -3441,21 +3564,28 @@ async function refreshHistoryView(){
   const filtersSnapshot={ ...historyFilters };
   try{
     await historyTrendUpdateChain;
-    const [stats,latestTrace,fallbackMode,pageData]=await Promise.all([
+    const [stats,latestTrace,fallbackSettings,pageData]=await Promise.all([
       sessionHistoryStore.getStats(),
       sessionHistoryStore.getLatestTrace(),
-      sessionHistoryStore.getMostRecentHistoryMode(),
+      sessionHistoryStore.getMostRecentHistorySettings(),
       sessionHistoryStore.getSessionPage({
         filters:filtersSnapshot,
         pageIndex:historyPageIndex,
         pageSize:HISTORY_PAGE_SIZE
       })
     ]);
-    const resolvedMode=ensureHistoryChartMode(fallbackMode);
-    const trendData=await sessionHistoryStore.getTrendData(resolvedMode);
+    const chartSelection=ensureHistoryChartSelection(fallbackSettings.mode,fallbackSettings.nBackLevel);
+    const trendData=await sessionHistoryStore.getTrendData(chartSelection.mode,chartSelection.nBackLevel);
     if(trendRefreshToken!==historyTrendRefreshToken || sessionRefreshToken!==historySessionRefreshToken) return;
     historyPageIndex=pageData.pageIndex;
-    renderHistoryView({ stats, latestTrace, trendData, pageData, fallbackMode });
+    renderHistoryView({
+      stats,
+      latestTrace,
+      trendData,
+      pageData,
+      fallbackMode:fallbackSettings.mode,
+      fallbackNBackLevel:fallbackSettings.nBackLevel
+    });
   }catch(e){
     if(trendRefreshToken!==historyTrendRefreshToken || sessionRefreshToken!==historySessionRefreshToken) return;
     historyPageIndex=0;
@@ -3464,7 +3594,8 @@ async function refreshHistoryView(){
       latestTrace:null,
       trendData:createEmptyTrendData(),
       pageData:createEmptyHistoryPageData(),
-      fallbackMode:defaultSettings.mode
+      fallbackMode:defaultSettings.mode,
+      fallbackNBackLevel:defaultSettings.nBackLevel
     });
   }
 }
@@ -3867,14 +3998,14 @@ function getThresholds(){
 function updateIntervalInputConstraints(){
   const step=clampInteger(intervalIncrementSelect.value,parseInt(defaultSettings.intervalIncrement,10),10,100);
 
-  maximumIntervalInput.min="201";
+  maximumIntervalInput.min="100";
   maximumIntervalInput.max="3000";
   maximumIntervalInput.step=String(step);
   startingIntervalInput.min="100";
   startingIntervalInput.max="3000";
   startingIntervalInput.step=String(step);
   minimumIntervalInput.min="100";
-  minimumIntervalInput.max="2999";
+  minimumIntervalInput.max="3000";
   minimumIntervalInput.step=String(step);
 }
 
@@ -3892,14 +4023,17 @@ function getIntervalInputBounds(input){
   if(input===minimumIntervalInput){
     return {
       min:100,
-      max:(Number.isFinite(maximum) ? maximum : 3000)-1
+      max:Math.min(
+        Number.isFinite(maximum) ? maximum : 3000,
+        Number.isFinite(starting) ? starting : 3000
+      )
     };
   }
   return {
     min:Math.max(
-      201,
-      Number.isFinite(minimum) ? minimum+1 : 201,
-      Number.isFinite(starting) ? starting : 201
+      100,
+      Number.isFinite(minimum) ? minimum : 100,
+      Number.isFinite(starting) ? starting : 100
     ),
     max:3000
   };
@@ -3913,10 +4047,10 @@ function isValidIntervalInput(input){
   if(value<bounds.min || value>bounds.max) return false;
 
   if(input===minimumIntervalInput){
-    return value<Number(maximumIntervalInput.value);
+    return value<=Number(maximumIntervalInput.value) && value<=Number(startingIntervalInput.value);
   }
   if(input===maximumIntervalInput){
-    return value>Number(minimumIntervalInput.value) && value>=Number(startingIntervalInput.value);
+    return value>=Number(minimumIntervalInput.value) && value>=Number(startingIntervalInput.value);
   }
   return true;
 }
@@ -3956,7 +4090,10 @@ function stepIntervalInput(inputId,direction){
 
 function changeInterval(newInterval){
   const clampedInterval=Math.max(minimumInterval,Math.min(maximumInterval,newInterval));
-  if(clampedInterval===interval) return;
+  if(clampedInterval===interval){
+    resetFeedbackIndicators();
+    return;
+  }
 
   const now=getClockTime();
   const previousInterval=interval;
@@ -4023,12 +4160,19 @@ function resetQuestionStates(){
   activeQuestionState=null;
 }
 
+function hasEnoughStimuliForQuestion(){
+  return stimulusHistory.length >= nBackLevel + 1;
+}
+
 function createQuestionState(startedAt){
   const traceIndex=Math.max(0,sessionIntervalTrace.length-1);
+  const latestIndex=stimulusHistory.length-1;
+  const nBackNumber=stimulusHistory[latestIndex-nBackLevel];
+  const latestNumber=stimulusHistory[latestIndex];
   return {
     startedAt,
     responseInterval:interval,
-    expectedAnswer:stimulusCount>=2 ? getExpectedAnswer(previousStimulusNumber,currentStimulusNumber) : null,
+    expectedAnswer:hasEnoughStimuliForQuestion() ? getExpectedAnswer(nBackNumber,latestNumber) : null,
     traceIndex,
     resolved:false
   };
@@ -4152,6 +4296,7 @@ function buildSessionHistoryCsv(sessions){
     { header:"endedAt", getValue:session=>formatCsvTimestamp(session.endedAt) },
     { header:"status", getValue:session=>session.status },
     { header:"arithmeticMode", getValue:session=>session.arithmeticMode },
+    { header:"nBackLevel", getValue:session=>session.nBackLevel },
     { header:"endCondition", getValue:session=>session.endCondition },
     { header:"durationMs", getValue:session=>session.durationMs },
     { header:"accuracyPercent", getValue:session=>session.accuracy },
@@ -4182,7 +4327,7 @@ function renderResults(responseTimeStats){
   const accuracy=totalItems?correctAnswers/totalItems*100:0;
   const averageResponseTime=totalItems?totalResponseTime/totalItems:0;
   const duration=Math.max(0,sessionEndedAt-sessionStartedAt);
-  const totalQuestionsAsked=Math.max(0,totalItems-(excludeLastQuestionFromCount?1:0));
+  const totalQuestionsAsked=Math.max(0,totalItems);
 
   resultAccuracy.textContent=formatPercent(accuracy);
   resultAverageResponse.textContent=Math.round(averageResponseTime) + " ms";
@@ -4230,8 +4375,10 @@ function runStimulus(){
   const now=getClockTime();
   lastStimulusAt=now;
   clearPendingAnswer();
-  previousStimulusNumber=currentStimulusNumber;
-  currentStimulusNumber=num;
+  stimulusHistory.push(num);
+  if(stimulusHistory.length>nBackLevel+1){
+    stimulusHistory.shift();
+  }
   stimulusCount++;
   sessionIntervalTrace.push({
     questionNumber:stimulusCount,
@@ -4241,7 +4388,7 @@ function runStimulus(){
   });
   playStimulusAudio(num);
 
-  if(stimulusCount>=2){
+  if(hasEnoughStimuliForQuestion()){
     awaitingAnswer=true;
     responseStartedAt=now;
     responseInterval=interval;
@@ -4285,15 +4432,18 @@ async function startGame(){
   setSessionState("starting");
   currentSessionId=generateSessionId();
 
-  maximumInterval=Math.max(201,parseInt(maximumIntervalInput.value)||parseInt(defaultSettings.maximumInterval));
-  minimumInterval=Math.max(100,parseInt(minimumIntervalInput.value)||parseInt(defaultSettings.minimumInterval));
-  if(minimumInterval>=maximumInterval) minimumInterval=maximumInterval-1;
-  startingInterval=Math.max(minimumInterval,parseInt(startingIntervalInput.value)||parseInt(defaultSettings.startingInterval));
-  if(startingInterval>maximumInterval) startingInterval=maximumInterval;
+  const minimumIntervalCandidate=Math.max(100,parseInt(minimumIntervalInput.value)||parseInt(defaultSettings.minimumInterval));
+  const startingIntervalCandidate=Math.max(100,parseInt(startingIntervalInput.value)||parseInt(defaultSettings.startingInterval));
+  const maximumIntervalCandidate=Math.max(100,parseInt(maximumIntervalInput.value)||parseInt(defaultSettings.maximumInterval));
+  minimumInterval=minimumIntervalCandidate;
+  maximumInterval=Math.max(minimumIntervalCandidate,startingIntervalCandidate,maximumIntervalCandidate);
+  startingInterval=Math.max(minimumInterval,Math.min(startingIntervalCandidate,maximumInterval));
   interval=startingInterval;
   endCondition=endConditionSelect.value;
   targetCorrect=Math.max(1,parseInt(targetCorrectInput.value)||parseInt(defaultSettings.targetCorrect));
   applyArithmeticMode(modeSelect.value);
+  nBackLevel=normalizeNBackLevel(nBackLevelInput.value);
+  nBackLevelInput.value=String(nBackLevel);
   const duration=Math.max(1,parseInt(durationInput.value)||parseInt(defaultSettings.duration))*60000;
   beepEnabled=beepToggle.checked;
   showIntervalTiming=showIntervalTimingToggle.checked;
@@ -4308,11 +4458,10 @@ async function startGame(){
   totalResponseTime=0;
   correctResponseTimes=[];
   stimulusCount=0;
-  previousStimulusNumber=null;
-  currentStimulusNumber=null;
+  stimulusHistory=[];
   correctStreak=0; wrongStreak=0;
   correctAnswers=0;
-  excludeLastQuestionFromCount=false;
+  excludeLastQuestionFromTrace=false;
   sessionOutcome="Completed";
   intervalCounts={}; intervalTime={};
   sortedIntervalKeys=[];
@@ -4361,7 +4510,7 @@ function stopGame(reason="manual"){
   if(sessionState!=="active"&&sessionState!=="starting") return;
 
   sessionOutcome=reason==="manual" ? "Manually exited" : "Completed";
-  excludeLastQuestionFromCount=awaitingAnswer && stimulusCount>=2 && answer.value.trim()==="";
+  excludeLastQuestionFromTrace=awaitingAnswer && activeQuestionState && answer.value.trim()==="";
   sessionEndedAt=Date.now();
   gameRunning=false;
   clearTimeout(timeoutId);
@@ -4376,7 +4525,7 @@ function stopGame(reason="manual"){
   stopStimulusAudioPlayback();
   void closeBeepAudioContext();
 
-  if(awaitingAnswer && stimulusCount>=2 && activeQuestionState){
+  if(awaitingAnswer && activeQuestionState){
     if(answer.value.trim()===""){
       updateLatestTraceResponseTime(responseInterval||interval,activeQuestionState.traceIndex);
     }else{
@@ -4413,7 +4562,7 @@ function stopGame(reason="manual"){
 
 function checkInputLive(event){
   if(sessionState!=="active") return;
-  if(!awaitingAnswer || stimulusCount<2 || !activeQuestionState || activeQuestionState.resolved) return;
+  if(!awaitingAnswer || !hasEnoughStimuliForQuestion() || !activeQuestionState || activeQuestionState.resolved) return;
 
   const submittedValue=answer.value.trim();
   if(submittedValue==="") return;
@@ -4439,6 +4588,10 @@ const targetCorrectInput=document.getElementById("targetCorrect");
 const targetCorrectField=document.getElementById("targetCorrectField");
 const modeField=document.getElementById("modeField");
 const modeSelect=document.getElementById("modeSelect");
+const nBackLevelField=document.getElementById("nBackLevelField");
+const nBackLevelInput=document.getElementById("nBackLevelInput");
+const nBackHelp=document.querySelector(".n-back-help");
+const nBackInfoBtn=document.getElementById("nBackInfoBtn");
 const correctThresholdInput=document.getElementById("correctThreshold");
 const incorrectThresholdInput=document.getElementById("incorrectThreshold");
 const showAdvancedSettingsToggle=document.getElementById("showAdvancedSettingsToggle");
@@ -4499,11 +4652,13 @@ const importHistoryInput=document.getElementById("importHistoryInput");
 const historyFiltersPanel=document.getElementById("historyFiltersPanel");
 const historyStatusFilter=document.getElementById("historyStatusFilter");
 const historyModeFilter=document.getElementById("historyModeFilter");
+const historyNBackFilter=document.getElementById("historyNBackFilter");
 const historyTrendFilter=document.getElementById("historyTrendFilter");
 const historyCompletedSessions=document.getElementById("historyCompletedSessions");
 const historyCorrectAnswers=document.getElementById("historyCorrectAnswers");
 const historyDurationTrained=document.getElementById("historyDurationTrained");
 const historyChartModeSelect=document.getElementById("historyChartModeSelect");
+const historyChartNBackLevelSelect=document.getElementById("historyChartNBackLevelSelect");
 const historyChartModeNote=document.getElementById("historyChartModeNote");
 const accuracyTrendChart=document.getElementById("accuracyTrendChart");
 const accuracyTrendDetails=document.getElementById("accuracyTrendDetails");
@@ -4531,6 +4686,7 @@ const liveSettingsControls=[
 const committedSettingsControls=[
   endConditionSelect,
   modeSelect,
+  nBackLevelInput,
   showAdvancedSettingsToggle,
   voiceSelect,
   beepToggle,
@@ -4599,7 +4755,7 @@ historyStatsHelp.onfocusout=()=>{
 };
 historyStatsInfoBtn.onclick=event=>{
   event.stopPropagation();
-  historyStatsGlossaryPinned=!historyStatsGlossaryPinned;
+  setHistoryStatsGlossaryPinned(!historyStatsGlossaryPinned);
   if(historyStatsGlossaryPinned || historyStatsHelp.matches(":hover") || historyStatsHelp.contains(document.activeElement)){
     setHistoryStatsGlossaryVisible(true);
   }else{
@@ -4669,12 +4825,20 @@ historyModeFilter.onchange=()=>{
   setHistoryFilterValue("mode",historyModeFilter.value);
   void refreshHistorySessions();
 };
+historyNBackFilter.onchange=()=>{
+  setHistoryFilterValue("nBackLevel",historyNBackFilter.value);
+  void refreshHistorySessions();
+};
 historyTrendFilter.onchange=()=>{
   setHistoryFilterValue("trendInclusion",historyTrendFilter.value);
   void refreshHistorySessions();
 };
 historyChartModeSelect.onchange=()=>{
   setHistoryChartMode(historyChartModeSelect.value);
+  void refreshHistoryTrendCharts();
+};
+historyChartNBackLevelSelect.onchange=()=>{
+  setHistoryChartNBackLevel(historyChartNBackLevelSelect.value);
   void refreshHistoryTrendCharts();
 };
 resetHistoryFiltersBtn.onclick=()=>{
@@ -4698,28 +4862,39 @@ beepTestBtn.onclick=()=>{
 };
 normalThresholdPresetBtn.onclick=()=>applyThresholdPreset(4,4);
 highAccuracyPresetBtn.onclick=()=>applyThresholdPreset(5,3);
-thresholdHelp.onpointerenter=()=>{
+thresholdInfoBtn.onpointerenter=()=>{
   syncThresholdInfoAria();
 };
-thresholdHelp.onpointerleave=()=>{
-  setTimeout(syncThresholdInfoAria,0);
-};
-thresholdHelp.onfocusin=()=>{
-  syncThresholdInfoAria();
-};
-thresholdHelp.onfocusout=()=>{
+thresholdInfoBtn.onpointerleave=()=>{
   setTimeout(syncThresholdInfoAria,0);
 };
 thresholdInfoBtn.onclick=event=>{
   event.stopPropagation();
-  thresholdHelp.classList.toggle("tooltip-open");
+  thresholdHelp.classList.toggle("tooltip-pinned");
   syncThresholdInfoAria();
+};
+nBackInfoBtn.onpointerenter=()=>{
+  syncNBackInfoAria();
+};
+nBackInfoBtn.onpointerleave=()=>{
+  setTimeout(syncNBackInfoAria,0);
+};
+nBackInfoBtn.onclick=event=>{
+  event.stopPropagation();
+  nBackHelp.classList.toggle("tooltip-pinned");
+  syncNBackInfoAria();
 };
 document.addEventListener("click",event=>{
   if(!thresholdHelp.contains(event.target)){
-    thresholdHelp.classList.remove("tooltip-open");
+    thresholdHelp.classList.remove("tooltip-pinned");
     syncThresholdInfoAria();
   }
+  if(!nBackHelp.contains(event.target)){
+    nBackHelp.classList.remove("tooltip-pinned");
+    syncNBackInfoAria();
+  }
+},true);
+document.addEventListener("click",event=>{
   if(historyFilterVisible && historyFiltersPanel && historyFilterBtn && !historyFiltersPanel.contains(event.target) && !historyFilterBtn.contains(event.target)){
     toggleHistoryFiltersVisible(false);
   }
@@ -4737,16 +4912,25 @@ document.addEventListener("keydown",event=>{
       historyStatsInfoBtn.focus();
     }
   }
-  if(thresholdHelp && thresholdHelp.classList.contains("tooltip-open")){
-    thresholdHelp.classList.remove("tooltip-open");
+  if(thresholdHelp && (thresholdHelp.classList.contains("tooltip-pinned")
+    || thresholdInfoBtn.matches(":hover"))){
+    thresholdHelp.classList.remove("tooltip-pinned");
     syncThresholdInfoAria();
     thresholdInfoBtn.focus();
+  }
+  if(nBackHelp && (nBackHelp.classList.contains("tooltip-pinned")
+    || nBackInfoBtn.matches(":hover"))){
+    nBackHelp.classList.remove("tooltip-pinned");
+    nBackInfoBtn.focus();
+    syncNBackInfoAria();
   }
 });
 showAdvancedSettingsToggle.addEventListener("change",()=>{
   if(!showAdvancedSettingsToggle.checked){
-    thresholdHelp.classList.remove("tooltip-open");
+    thresholdHelp.classList.remove("tooltip-pinned");
+    nBackHelp.classList.remove("tooltip-pinned");
     syncThresholdInfoAria();
+    syncNBackInfoAria();
   }
 });
 answer.addEventListener("input",checkInputLive);
