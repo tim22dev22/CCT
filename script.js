@@ -73,7 +73,8 @@ const defaultSettings={
   beepEnabled:true,
   darkMode:false,
   showAdvancedSettings:false,
-  showIntervalTiming:false
+  showIntervalTiming:false,
+  hideTimerDuringSession:false
 };
 
 let intervalCounts={}, intervalTime={}, currentIntervalStart=0;
@@ -84,6 +85,8 @@ let showIntervalTiming=false;
 let selectedVoice="";
 let playbackSpeed=1;
 let beepVolume=DEFAULT_BEEP_VOLUME_PERCENT;
+let hideTimerDuringSession=false;
+let sessionTimerVisible=true;
 let voiceAudioCache={};
 let activeStimulusAudios=new Set();
 let voiceLibrary={};
@@ -224,6 +227,7 @@ function normalizeSavedSettings(parsed){
     beepVolume,
     showAdvancedSettings:!!parsed.showAdvancedSettings,
     showIntervalTiming:!!parsed.showIntervalTiming,
+    hideTimerDuringSession:!!parsed.hideTimerDuringSession,
     beepEnabled:parsed.beepEnabled ?? defaultSettings.beepEnabled,
     darkMode:parsed.darkMode ?? defaultSettings.darkMode
   };
@@ -235,6 +239,7 @@ function updateAppViews(){
   const settingsVisible=sessionState==="idle"&&!historyVisible;
   const historyPageVisible=historyVisible;
 
+  document.body.classList.toggle("session-in-progress",sessionVisible);
   sessionView.classList.toggle("hidden",!sessionVisible);
   resultsView.classList.toggle("hidden",!resultsVisible);
   historyView.classList.toggle("hidden",!historyPageVisible);
@@ -243,6 +248,7 @@ function updateAppViews(){
   startBtn.disabled=sessionState!=="idle";
   answer.disabled=sessionState!=="active";
   endSessionBtn.disabled=!sessionVisible;
+  toggleSessionTimerBtn.disabled=sessionState!=="active" || endCondition!=="timer";
 }
 
 function hideHistoryFilters(){
@@ -306,7 +312,8 @@ function getSettingsFromForm(){
     beepEnabled:beepToggle.checked,
     darkMode:themeToggle.checked,
     showAdvancedSettings:showAdvancedSettingsToggle.checked,
-    showIntervalTiming:showIntervalTimingToggle.checked
+    showIntervalTiming:showIntervalTimingToggle.checked,
+    hideTimerDuringSession:hideTimerDuringSessionToggle.checked
   };
 }
 
@@ -417,6 +424,7 @@ function applySettings(settings){
   beepToggle.checked=settings.beepEnabled;
   themeToggle.checked=settings.darkMode;
   showIntervalTimingToggle.checked=settings.showIntervalTiming;
+  hideTimerDuringSessionToggle.checked=settings.hideTimerDuringSession;
   intervalIncrementValue.textContent=settings.intervalIncrement;
   updateThresholdLabels();
   currentInterval.textContent=settings.startingInterval;
@@ -426,6 +434,7 @@ function applySettings(settings){
   showAdvancedSettingsToggle.checked=settings.showAdvancedSettings;
   applyAdvancedSettingsVisibility(settings.showAdvancedSettings);
   applyIntervalTimingVisibility(settings.showIntervalTiming);
+  hideTimerDuringSession=hideTimerDuringSessionToggle.checked;
   updateEndConditionControls();
 }
 
@@ -466,6 +475,8 @@ function handleSettingsChange(event){
     applyAdvancedSettingsVisibility(showAdvancedSettingsToggle.checked);
   }else if(target===showIntervalTimingToggle){
     applyIntervalTimingVisibility(showIntervalTimingToggle.checked);
+  }else if(target===hideTimerDuringSessionToggle){
+    hideTimerDuringSession=hideTimerDuringSessionToggle.checked;
   }else if(target===endConditionSelect || target===beepToggle){
     updateEndConditionControls();
   }
@@ -3600,16 +3611,35 @@ async function refreshHistoryView(){
   }
 }
 
-function updateSessionLimitUI(){
+function updateSessionLimitUI(correctAnswerCount=correctAnswers){
   if(endCondition==="correct"){
     sessionLimitLabel.textContent="Correct Answers";
-    timeLeft.textContent=correctAnswers + " / " + targetCorrect;
+    timeLeft.textContent=correctAnswerCount + " / " + targetCorrect;
     sessionLimitSuffix.textContent="";
     return;
   }
 
   sessionLimitLabel.textContent="Time Left";
   sessionLimitSuffix.textContent="s";
+}
+
+function initializeSessionLimitUI(durationMs){
+  updateSessionLimitUI(0);
+  if(endCondition==="timer"){
+    timeLeft.textContent=String(Math.ceil(durationMs/1000));
+  }
+}
+
+function applySessionTimerVisibility(isVisible){
+  sessionTimerVisible=!!isVisible;
+  const isTimerSession=endCondition==="timer";
+  sessionTimerMetric.classList.toggle("hidden",isTimerSession&&!sessionTimerVisible);
+  toggleSessionTimerBtn.classList.toggle("hidden",!isTimerSession);
+  toggleSessionTimerBtn.setAttribute("aria-expanded",String(sessionTimerVisible));
+  const actionLabel=sessionTimerVisible ? "Hide timer" : "Show timer";
+  toggleSessionTimerBtn.setAttribute("aria-label",actionLabel);
+  toggleSessionTimerBtn.title=actionLabel;
+  toggleSessionTimerBtn.disabled=sessionState!=="active" || !isTimerSession;
 }
 
 function formatVoiceLabel(voiceKey){
@@ -4225,7 +4255,9 @@ function isCorrectAnswerInput(questionState,submittedValue,finalizedAt){
 }
 
 function isAllowedSessionClick(target){
-  return target===answer || answer.contains(target) || target===endSessionBtn || endSessionBtn.contains(target);
+  return target===answer || answer.contains(target)
+    || target===endSessionBtn || endSessionBtn.contains(target)
+    || target===toggleSessionTimerBtn || toggleSessionTimerBtn.contains(target);
 }
 
 function restoreAnswerFocus(){
@@ -4429,7 +4461,6 @@ async function startGame(){
   validateIntervalInput(minimumIntervalInput);
   validateIntervalInput(maximumIntervalInput);
   saveSettings();
-  setSessionState("starting");
   currentSessionId=generateSessionId();
 
   const minimumIntervalCandidate=Math.max(100,parseInt(minimumIntervalInput.value)||parseInt(defaultSettings.minimumInterval));
@@ -4450,6 +4481,11 @@ async function startGame(){
   selectedVoice=resolveVoiceKey(voiceSelect.value);
   voiceSelect.value=selectedVoice;
   playbackSpeed=parseFloat(playbackSpeedSelect.value)||1;
+  currentInterval.textContent=startingInterval;
+  initializeSessionLimitUI(duration);
+  sessionTimerVisible=!hideTimerDuringSession;
+  applySessionTimerVisibility(sessionTimerVisible);
+  setSessionState("starting");
   await preloadVoice(selectedVoice);
   if(sessionState!=="starting") return;
   retainOnlyVoiceCache(selectedVoice);
@@ -4482,11 +4518,8 @@ async function startGame(){
 
   answer.value="";
 
-  currentInterval.textContent=startingInterval;
-  updateSessionLimitUI();
   if(endCondition==="timer"){
     endTime=sessionStartedAt+duration;
-    timeLeft.textContent=Math.ceil(duration/1000);
   }else{
     endTime=0;
   }
@@ -4611,12 +4644,15 @@ const beepTestBtn=document.getElementById("beepTestBtn");
 const beepToggle=document.getElementById("beepToggle");
 const themeToggle=document.getElementById("themeToggle");
 const showIntervalTimingToggle=document.getElementById("showIntervalTimingToggle");
+const hideTimerDuringSessionToggle=document.getElementById("hideTimerDuringSessionToggle");
 const resetSettingsBtn=document.getElementById("resetSettingsBtn");
 const playbackSpeedValue=document.getElementById("playbackSpeedValue");
 const currentInterval=document.getElementById("currentInterval");
 const timeLeft=document.getElementById("timeLeft");
 const sessionLimitLabel=document.getElementById("sessionLimitLabel");
 const sessionLimitSuffix=document.getElementById("sessionLimitSuffix");
+const sessionTimerMetric=document.getElementById("sessionTimerMetric");
+const toggleSessionTimerBtn=document.getElementById("toggleSessionTimerBtn");
 const intervalStats=document.getElementById("intervalStats");
 const resultsIntervalStatsWrap=document.getElementById("resultsIntervalStatsWrap");
 const resultsIntervalStats=document.getElementById("resultsIntervalStats");
@@ -4691,11 +4727,23 @@ const committedSettingsControls=[
   voiceSelect,
   beepToggle,
   themeToggle,
-  showIntervalTimingToggle
+  showIntervalTimingToggle,
+  hideTimerDuringSessionToggle
 ];
 
 startBtn.onclick=startGame;
 endSessionBtn.onclick=()=>stopGame("manual");
+toggleSessionTimerBtn.onclick=()=>{
+  if(sessionState!=="active" || endCondition!=="timer") return;
+  applySessionTimerVisibility(!sessionTimerVisible);
+  restoreAnswerFocus();
+};
+toggleSessionTimerBtn.addEventListener("pointerdown",event=>{
+  if(sessionState!=="active") return;
+  // Keep the answer field focused for mouse, touch, and pen activation.
+  event.preventDefault();
+  restoreAnswerFocus();
+});
 newSessionBtn.onclick=()=>setSessionState("idle");
 resetSettingsBtn.onclick=resetSettingsToDefault;
 historyBtn.onclick=()=>{

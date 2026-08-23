@@ -12,15 +12,32 @@
 <p class="subtitle">Auditory paced addition training</p>
 
 <div id="sessionView" class="session-view hidden">
-  <div class="session-metrics">
-    <div class="metric">
-      <span>Current Interval</span>
-      <strong><span id="currentInterval">1000</span> ms</strong>
+  <div class="session-metrics-row">
+    <div class="session-metrics">
+      <div class="metric">
+        <span>Current Interval</span>
+        <strong><span id="currentInterval">1000</span> ms</strong>
+      </div>
+      <div id="sessionTimerMetric" class="metric">
+        <span id="sessionLimitLabel">Time Left</span>
+        <strong><span id="timeLeft">0</span><span id="sessionLimitSuffix">s</span></strong>
+      </div>
     </div>
-    <div class="metric">
-      <span id="sessionLimitLabel">Time Left</span>
-      <strong><span id="timeLeft">0</span><span id="sessionLimitSuffix">s</span></strong>
-    </div>
+
+    <button
+      id="toggleSessionTimerBtn"
+      class="icon-square-button session-timer-toggle"
+      type="button"
+      aria-controls="sessionTimerMetric"
+      aria-expanded="true"
+      aria-label="Hide timer"
+      title="Hide timer"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <circle cx="12" cy="12" r="9"></circle>
+        <path d="M12 7v5l3 2"></path>
+      </svg>
+    </button>
   </div>
 
   <div id="feedback"></div>
@@ -280,6 +297,10 @@
         <section class="settings-section">
           <div class="section-header">Appearance</div>
           <label class="toggle-field"><input type="checkbox" id="themeToggle"> Dark mode</label>
+          <label class="toggle-field">
+            <input type="checkbox" id="hideTimerDuringSessionToggle">
+            Hide timer during sessions
+          </label>
         </section>
 
         <section class="settings-section">
