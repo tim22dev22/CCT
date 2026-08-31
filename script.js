@@ -63,6 +63,8 @@ const DEFAULT_BEEP_GAIN=0.12;
 const DEFAULT_BEEP_VOLUME_PERCENT=50;
 const MAX_BEEP_VOLUME_PERCENT=100;
 const MAX_BEEP_GAIN=0.9;
+const MIN_INTERVAL_VALUE=100;
+const MAX_INTERVAL_VALUE=3000;
 const defaultSettings={
   startingInterval:"3000",
   maximumInterval:"3000",
@@ -197,10 +199,10 @@ function resolveVoiceKey(value,fallbackKey=defaultSettings.voice){
 }
 
 function normalizeSavedSettings(parsed){
-  const startingFallback=clampInteger(parsed.startingInterval ?? parsed.interval,defaultSettings.startingInterval,100,3000);
-  const minimumFallback=clampInteger(parsed.minimumInterval,defaultSettings.minimumInterval,100,3000);
-  const maximumFallback=clampInteger(parsed.maximumInterval,defaultSettings.maximumInterval,100,3000);
-  const maximumIntervalValue=Math.max(100,minimumFallback,startingFallback,maximumFallback);
+  const startingFallback=clampInteger(parsed.startingInterval ?? parsed.interval,defaultSettings.startingInterval,MIN_INTERVAL_VALUE,MAX_INTERVAL_VALUE);
+  const minimumFallback=clampInteger(parsed.minimumInterval,defaultSettings.minimumInterval,MIN_INTERVAL_VALUE,MAX_INTERVAL_VALUE);
+  const maximumFallback=clampInteger(parsed.maximumInterval,defaultSettings.maximumInterval,MIN_INTERVAL_VALUE,MAX_INTERVAL_VALUE);
+  const maximumIntervalValue=Math.max(MIN_INTERVAL_VALUE,minimumFallback,startingFallback,maximumFallback);
   const minimumInterval=String(minimumFallback);
   const startingInterval=String(Math.max(
     parseInt(minimumInterval,10),
@@ -217,7 +219,7 @@ function normalizeSavedSettings(parsed){
   const voice=resolveVoiceKey(parsed.voice,defaultSettings.voice);
   const beepVolume=String(normalizeBeepVolumeSetting(parsed.beepVolume,defaultSettings.beepVolume));
 
-  return {
+  const normalized={
     ...defaultSettings,
     ...parsed,
     startingInterval,
@@ -239,6 +241,11 @@ function normalizeSavedSettings(parsed){
     beepEnabled:parsed.beepEnabled ?? defaultSettings.beepEnabled,
     darkMode:parsed.darkMode ?? defaultSettings.darkMode
   };
+  delete normalized.preferredStartingInterval;
+  delete normalized.preferredMaximumInterval;
+  delete normalized.preferredMinimumInterval;
+  delete normalized.intervalPreferenceOrder;
+  return normalized;
 }
 
 function updateAppViews(){
@@ -336,6 +343,7 @@ function getProfileNameKey(value){
 function normalizeProfileSettings(settings){
   const normalized=normalizeSavedSettings(settings);
   delete normalized.darkMode;
+  delete normalized.showAdvancedSettings;
   return normalized;
 }
 
@@ -566,7 +574,11 @@ function createProfile(name,settings){
     setProfileDialogError("This browser could not save the profile. Try again.");
     return false;
   }
-  applySettings(profile.settings);
+  applySettings({
+    ...profile.settings,
+    showAdvancedSettings:showAdvancedSettingsToggle.checked,
+    darkMode:themeToggle.getAttribute("aria-pressed")==="true"
+  });
   saveSettings();
   renderProfileOptions(profile.id);
   setProfileStatus(`Created “${name}”.`,"success");
@@ -586,7 +598,11 @@ function activateProfile(profileId){
     setProfileStatus("This browser could not switch profiles.","error");
     return;
   }
-  applySettings(profile.settings);
+  applySettings({
+    ...profile.settings,
+    showAdvancedSettings:showAdvancedSettingsToggle.checked,
+    darkMode:themeToggle.getAttribute("aria-pressed")==="true"
+  });
   saveSettings();
   renderProfileOptions(profile.id);
   setProfileStatus(`Loaded “${profile.name}”.`,"success");
@@ -669,7 +685,11 @@ function deleteActiveProfile(){
     setProfileStatus("This browser could not delete the profile.","error");
     return;
   }
-  applySettings(nextProfile.settings);
+  applySettings({
+    ...nextProfile.settings,
+    showAdvancedSettings:showAdvancedSettingsToggle.checked,
+    darkMode:themeToggle.getAttribute("aria-pressed")==="true"
+  });
   saveSettings();
   renderProfileOptions(nextProfile.id);
   setProfileStatus(`Deleted “${profile.name}”. Switched to “${nextProfile.name}”.`,"success");
@@ -4405,77 +4425,115 @@ function getThresholds(){
 function updateIntervalInputConstraints(){
   const step=clampInteger(intervalIncrementSelect.value,parseInt(defaultSettings.intervalIncrement,10),10,100);
 
-  maximumIntervalInput.min="100";
-  maximumIntervalInput.max="3000";
+  maximumIntervalInput.min=String(MIN_INTERVAL_VALUE);
+  maximumIntervalInput.max=String(MAX_INTERVAL_VALUE);
   maximumIntervalInput.step=String(step);
-  startingIntervalInput.min="100";
-  startingIntervalInput.max="3000";
+  startingIntervalInput.min=String(MIN_INTERVAL_VALUE);
+  startingIntervalInput.max=String(MAX_INTERVAL_VALUE);
   startingIntervalInput.step=String(step);
-  minimumIntervalInput.min="100";
-  minimumIntervalInput.max="3000";
+  minimumIntervalInput.min=String(MIN_INTERVAL_VALUE);
+  minimumIntervalInput.max=String(MAX_INTERVAL_VALUE);
   minimumIntervalInput.step=String(step);
 }
 
 function getIntervalInputBounds(input){
-  const minimum=Number(minimumIntervalInput.value);
-  const maximum=Number(maximumIntervalInput.value);
-  const starting=Number(startingIntervalInput.value);
-
-  if(input===startingIntervalInput){
-    return {
-      min:Number.isFinite(minimum) ? minimum : 100,
-      max:Number.isFinite(maximum) ? maximum : 3000
-    };
-  }
-  if(input===minimumIntervalInput){
-    return {
-      min:100,
-      max:Math.min(
-        Number.isFinite(maximum) ? maximum : 3000,
-        Number.isFinite(starting) ? starting : 3000
-      )
-    };
-  }
   return {
-    min:Math.max(
-      100,
-      Number.isFinite(minimum) ? minimum : 100,
-      Number.isFinite(starting) ? starting : 100
-    ),
-    max:3000
+    min:MIN_INTERVAL_VALUE,
+    max:MAX_INTERVAL_VALUE
   };
-}
-
-function isValidIntervalInput(input){
-  const value=Number(input.value);
-  if(!Number.isInteger(value)) return false;
-
-  const bounds=getIntervalInputBounds(input);
-  if(value<bounds.min || value>bounds.max) return false;
-
-  if(input===minimumIntervalInput){
-    return value<=Number(maximumIntervalInput.value) && value<=Number(startingIntervalInput.value);
-  }
-  if(input===maximumIntervalInput){
-    return value>=Number(minimumIntervalInput.value) && value>=Number(startingIntervalInput.value);
-  }
-  return true;
 }
 
 function rememberIntervalInputValue(input){
   input.dataset.lastAcceptedValue=input.value;
 }
 
-function validateIntervalInput(input){
-  const previous=input.dataset.lastAcceptedValue;
-  if(isValidIntervalInput(input)){
-    rememberIntervalInputValue(input);
-    saveSettings();
-    return true;
+function parseIntervalInputValue(value){
+  if(String(value).trim()==="") return null;
+  const parsed=Number(value);
+  if(!Number.isInteger(parsed) || !Number.isFinite(parsed)) return null;
+  if(parsed<MIN_INTERVAL_VALUE || parsed>MAX_INTERVAL_VALUE) return null;
+  return parsed;
+}
+
+function getIntervalFallbackValue(fallback){
+  const parsed=parseIntervalInputValue(fallback);
+  return parsed===null ? MIN_INTERVAL_VALUE : parsed;
+}
+
+function readIntervalInputValue(input,fallback){
+  const value=parseIntervalInputValue(input.value);
+  if(value!==null) return value;
+
+  const previous=parseIntervalInputValue(input.dataset.lastAcceptedValue);
+  if(previous!==null) return previous;
+  return getIntervalFallbackValue(fallback);
+}
+
+function getDefaultIntervalInputValue(input){
+  if(input===startingIntervalInput) return parseInt(defaultSettings.startingInterval,10);
+  if(input===maximumIntervalInput) return parseInt(defaultSettings.maximumInterval,10);
+  return parseInt(defaultSettings.minimumInterval,10);
+}
+
+function restoreInvalidIntervalInput(input){
+  input.value=String(readIntervalInputValue(input,getDefaultIntervalInputValue(input)));
+}
+
+function reconcileIntervalInputs(changedInput=null){
+  if(changedInput){
+    const changedValue=parseIntervalInputValue(changedInput.value);
+    if(changedValue===null){
+      restoreInvalidIntervalInput(changedInput);
+      return false;
+    }
   }
 
-  if(previous!==undefined) input.value=previous;
-  return false;
+  let minimum=readIntervalInputValue(minimumIntervalInput,parseInt(defaultSettings.minimumInterval,10));
+  let starting=readIntervalInputValue(startingIntervalInput,parseInt(defaultSettings.startingInterval,10));
+  let maximum=readIntervalInputValue(maximumIntervalInput,parseInt(defaultSettings.maximumInterval,10));
+  if(changedInput===minimumIntervalInput){
+    minimum=parseIntervalInputValue(changedInput.value);
+  }else if(changedInput===startingIntervalInput){
+    starting=parseIntervalInputValue(changedInput.value);
+  }else if(changedInput===maximumIntervalInput){
+    maximum=parseIntervalInputValue(changedInput.value);
+  }
+  maximum=Math.max(maximum,minimum,starting);
+  starting=Math.max(minimum,Math.min(starting,maximum));
+  if(changedInput===maximumIntervalInput){
+    maximum=parseIntervalInputValue(changedInput.value);
+    minimum=Math.min(minimum,maximum);
+    starting=Math.min(starting,maximum);
+  }else if(changedInput===minimumIntervalInput){
+    minimum=parseIntervalInputValue(changedInput.value);
+    starting=Math.max(starting,minimum);
+    maximum=Math.max(maximum,starting);
+  }else if(changedInput===startingIntervalInput){
+    starting=parseIntervalInputValue(changedInput.value);
+    minimum=Math.min(minimum,starting);
+    maximum=Math.max(maximum,starting);
+  }
+
+  minimum=Math.max(MIN_INTERVAL_VALUE,Math.min(MAX_INTERVAL_VALUE,minimum));
+  maximum=Math.max(minimum,Math.min(MAX_INTERVAL_VALUE,maximum));
+  starting=Math.max(minimum,Math.min(maximum,starting));
+
+  minimumIntervalInput.value=String(minimum);
+  startingIntervalInput.value=String(starting);
+  maximumIntervalInput.value=String(maximum);
+  rememberIntervalInputValue(minimumIntervalInput);
+  rememberIntervalInputValue(startingIntervalInput);
+  rememberIntervalInputValue(maximumIntervalInput);
+
+  return true;
+}
+
+function validateIntervalInput(input){
+  const isValid=reconcileIntervalInputs(input);
+  if(isValid){
+    saveSettings();
+  }
+  return isValid;
 }
 
 function stepIntervalInput(inputId,direction){
@@ -4483,11 +4541,14 @@ function stepIntervalInput(inputId,direction){
   if(!input) return;
 
   const step=clampInteger(intervalIncrementSelect.value,parseInt(defaultSettings.intervalIncrement,10),10,100);
-  const current=Number(input.value);
-  if(!Number.isFinite(current)) return;
+  const current=parseIntervalInputValue(input.value);
+  if(current===null){
+    restoreInvalidIntervalInput(input);
+    return;
+  }
 
-  const bounds=getIntervalInputBounds(input);
   const delta=direction==="up" ? step : -step;
+  const bounds=getIntervalInputBounds(input);
   const next=Math.max(bounds.min,Math.min(bounds.max,current+delta));
   if(next===current) return;
 
@@ -4834,15 +4895,13 @@ function updateTimer(){
 async function startGame(){
   if(sessionState!=="idle") return;
 
-  validateIntervalInput(startingIntervalInput);
-  validateIntervalInput(minimumIntervalInput);
-  validateIntervalInput(maximumIntervalInput);
+  reconcileIntervalInputs();
   saveSettings();
   currentSessionId=generateSessionId();
 
-  const minimumIntervalCandidate=Math.max(100,parseInt(minimumIntervalInput.value)||parseInt(defaultSettings.minimumInterval));
-  const startingIntervalCandidate=Math.max(100,parseInt(startingIntervalInput.value)||parseInt(defaultSettings.startingInterval));
-  const maximumIntervalCandidate=Math.max(100,parseInt(maximumIntervalInput.value)||parseInt(defaultSettings.maximumInterval));
+  const minimumIntervalCandidate=Math.max(MIN_INTERVAL_VALUE,parseInt(minimumIntervalInput.value)||parseInt(defaultSettings.minimumInterval));
+  const startingIntervalCandidate=Math.max(MIN_INTERVAL_VALUE,parseInt(startingIntervalInput.value)||parseInt(defaultSettings.startingInterval));
+  const maximumIntervalCandidate=Math.max(MIN_INTERVAL_VALUE,parseInt(maximumIntervalInput.value)||parseInt(defaultSettings.maximumInterval));
   minimumInterval=minimumIntervalCandidate;
   maximumInterval=Math.max(minimumIntervalCandidate,startingIntervalCandidate,maximumIntervalCandidate);
   startingInterval=Math.max(minimumInterval,Math.min(startingIntervalCandidate,maximumInterval));
@@ -5498,7 +5557,11 @@ async function initializeApp(){
   }
   const globalSettings=readSavedSettings();
   const activeSettings=findProfileById(activeProfileId)?.settings || globalSettings;
-  applySettings({ ...activeSettings, darkMode:globalSettings.darkMode });
+  applySettings({
+    ...activeSettings,
+    showAdvancedSettings:globalSettings.showAdvancedSettings,
+    darkMode:globalSettings.darkMode
+  });
   persistProfiles();
   persistSettings();
   renderProfileOptions(activeProfileId);
