@@ -35,6 +35,10 @@ let historyTrendUpdateChain=Promise.resolve();
 let settingsSaveTimerId=null;
 let intervalStatsTimerId=null;
 let countdownTimerId=null;
+let profiles=[];
+let activeProfileId="";
+let profileNameDialogAction=null;
+let profileNameDialogTrigger=null;
 const HISTORY_PAGE_SIZE=20;
 const historyFilters={
   status:"all",
@@ -48,6 +52,10 @@ const EMPTY_HISTORY_STATS={
   totalDurationMs:0
 };
 const SETTINGS_KEY="cctSettings";
+const PROFILES_KEY="cctProfiles";
+const LEGACY_PRESETS_KEY="cctPresets";
+const PROFILES_SCHEMA_VERSION=1;
+const MAX_PROFILE_NAME_LENGTH=60;
 const ARITHMETIC_MODES=new Set(["addition","multiplication","subtraction","difference"]);
 const MIN_N_BACK_LEVEL=1;
 const MAX_N_BACK_LEVEL=5;
@@ -310,16 +318,373 @@ function getSettingsFromForm(){
     playbackSpeed:playbackSpeedSelect.value,
     beepVolume:beepVolumeSelect.value,
     beepEnabled:beepToggle.checked,
-    darkMode:themeToggle.checked,
+    darkMode:themeToggle.getAttribute("aria-pressed")==="true",
     showAdvancedSettings:showAdvancedSettingsToggle.checked,
     showIntervalTiming:showIntervalTimingToggle.checked,
     hideTimerDuringSession:hideTimerDuringSessionToggle.checked
   };
 }
 
-function persistSettings(){
+function normalizeProfileName(value){
+  return String(value??"").normalize("NFKC").trim().replace(/\s+/g," ");
+}
+
+function getProfileNameKey(value){
+  return normalizeProfileName(value).toLocaleLowerCase();
+}
+
+function normalizeProfileSettings(settings){
+  const normalized=normalizeSavedSettings(settings);
+  delete normalized.darkMode;
+  return normalized;
+}
+
+function generateProfileId(){
+  if(window.crypto && typeof window.crypto.randomUUID==="function"){
+    return window.crypto.randomUUID();
+  }
+  return "profile_" + Date.now() + "_" + Math.random().toString(36).slice(2,10);
+}
+
+function getUniqueProfileName(value,usedNames){
+  const baseName=normalizeProfileName(value) || "Profile";
+  const trimmedBase=baseName.slice(0,MAX_PROFILE_NAME_LENGTH);
+  let name=trimmedBase;
+  let suffixNumber=2;
+  while(usedNames.has(getProfileNameKey(name))){
+    const suffix=` (${suffixNumber++})`;
+    name=trimmedBase.slice(0,MAX_PROFILE_NAME_LENGTH-suffix.length) + suffix;
+  }
+  usedNames.add(getProfileNameKey(name));
+  return name;
+}
+
+function normalizeProfileList(records){
+  const usedNames=new Set();
+  const usedIds=new Set();
+  return records.reduce((result,record)=>{
+    if(!record || !record.settings) return result;
+    let id=String(record.id||generateProfileId());
+    while(usedIds.has(id)) id=generateProfileId();
+    usedIds.add(id);
+    result.push({
+      id,
+      name:getUniqueProfileName(record.name,usedNames),
+      settings:normalizeProfileSettings(record.settings),
+      createdAt:Number(record.createdAt)||Date.now(),
+      updatedAt:Number(record.updatedAt)||Number(record.createdAt)||Date.now()
+    });
+    return result;
+  },[]);
+}
+
+function readLegacyPresets(){
   try{
-    window.localStorage.setItem(SETTINGS_KEY,JSON.stringify(getSettingsFromForm()));
+    const raw=window.localStorage.getItem(LEGACY_PRESETS_KEY);
+    if(!raw) return [];
+    const parsed=JSON.parse(raw);
+    const records=Array.isArray(parsed) ? parsed : parsed?.presets;
+    return Array.isArray(records) ? records : [];
+  }catch(e){
+    return [];
+  }
+}
+
+function readSavedProfiles(){
+  try{
+    const raw=window.localStorage.getItem(PROFILES_KEY);
+    if(raw){
+      const parsed=JSON.parse(raw);
+      const records=Array.isArray(parsed) ? parsed : parsed?.profiles;
+      const normalized=normalizeProfileList(Array.isArray(records) ? records : []);
+      if(normalized.length){
+        const requestedId=String(parsed?.activeProfileId||"");
+        const active=normalized.find(profile=>profile.id===requestedId) || normalized[0];
+        return { profiles:normalized, activeProfileId:active.id };
+      }
+    }
+
+    const legacyRecords=readLegacyPresets();
+    const migrationRecords=[
+      { id:generateProfileId(), name:"Default", settings:readSavedSettings() },
+      ...legacyRecords
+    ];
+    const migrated=normalizeProfileList(migrationRecords);
+    const active=migrated[0];
+    return {
+      profiles:migrated.length ? migrated : normalizeProfileList([{ name:"Default", settings:defaultSettings }]),
+      activeProfileId:active?.id || ""
+    };
+  }catch(e){
+    const fallback={id:generateProfileId(),name:"Default",settings:defaultSettings};
+    return { profiles:normalizeProfileList([fallback]), activeProfileId:fallback.id };
+  }
+}
+
+function persistProfiles(options={}){
+  try{
+    const latest=readStoredProfileState();
+    const deletedIds=new Set(options.deletedIds||[]);
+    const localById=new Map(profiles.map(profile=>[profile.id,profile]));
+    const merged=[];
+    latest.profiles.forEach(profile=>{
+      if(deletedIds.has(profile.id)) return;
+      const local=localById.get(profile.id);
+      merged.push(local && Number(local.updatedAt)>=Number(profile.updatedAt) ? local : profile);
+      localById.delete(profile.id);
+    });
+    localById.forEach(profile=>merged.push(profile));
+    profiles=normalizeProfileList(merged);
+    if(!findProfileById(activeProfileId)) activeProfileId=latest.activeProfileId || profiles[0]?.id || "";
+    window.localStorage.setItem(PROFILES_KEY,JSON.stringify({
+      schemaVersion:PROFILES_SCHEMA_VERSION,
+      activeProfileId,
+      profiles
+    }));
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+
+function readStoredProfileState(){
+  try{
+    const raw=window.localStorage.getItem(PROFILES_KEY);
+    if(!raw) return {profiles:[],activeProfileId:""};
+    const parsed=JSON.parse(raw);
+    const records=Array.isArray(parsed) ? parsed : parsed?.profiles;
+    const normalized=normalizeProfileList(Array.isArray(records)?records:[]);
+    return {profiles:normalized,activeProfileId:String(parsed?.activeProfileId||normalized[0]?.id||"")};
+  }catch(e){
+    return {profiles:[],activeProfileId:""};
+  }
+}
+
+function findProfileById(id){
+  return profiles.find(profile=>profile.id===id) || null;
+}
+
+function profileNameExists(name,excludedId=""){
+  const nameKey=getProfileNameKey(name);
+  return profiles.some(profile=>profile.id!==excludedId && getProfileNameKey(profile.name)===nameKey);
+}
+
+function setProfileStatus(message,type=""){
+  profileStatus.textContent=message;
+  profileStatus.classList.toggle("is-error",type==="error");
+  profileStatus.classList.toggle("is-success",type==="success");
+}
+
+function renderProfileOptions(selectedId=activeProfileId){
+  const sorted=[...profiles].sort((a,b)=>a.name.localeCompare(b.name,undefined,{ sensitivity:"base" }));
+  profileSelect.replaceChildren();
+  sorted.forEach(profile=>{
+    const option=document.createElement("option");
+    option.value=profile.id;
+    option.textContent=profile.name;
+    profileSelect.append(option);
+  });
+  if(sorted.length){
+    profileSelect.value=findProfileById(selectedId) ? selectedId : sorted[0].id;
+  }
+  updateProfileActionState();
+}
+
+function updateProfileActionState(){
+  const hasActiveProfile=!!findProfileById(activeProfileId);
+  renameProfileBtn.disabled=!hasActiveProfile;
+  deleteProfileBtn.disabled=!hasActiveProfile || profiles.length<=1;
+}
+
+function getSelectedProfileSource(){
+  const selected=document.querySelector("input[name=profileSource]:checked");
+  return selected?.value==="default" ? "default" : "current";
+}
+
+function openProfileNameDialog(action,profile=null){
+  profileNameDialogAction={ action, profileId:profile?.id || "" };
+  profileNameDialogTrigger=document.activeElement;
+  const isRename=action==="rename";
+  profileNameDialogTitle.textContent=isRename ? "Rename Profile" : "New Profile";
+  confirmProfileNameBtn.textContent=isRename ? "Rename Profile" : "Create Profile";
+  profileNameInput.value=isRename ? profile.name : getNextProfileName();
+  profileSourceField.classList.toggle("hidden",isRename);
+  if(!isRename){
+    const currentSource=document.querySelector("input[name=profileSource][value=current]");
+    if(currentSource) currentSource.checked=true;
+  }
+  profileNameError.textContent="";
+  profileNameInput.removeAttribute("aria-invalid");
+  profileNameDialog.showModal();
+  setTimeout(()=>{
+    profileNameInput.focus();
+    profileNameInput.select();
+  },0);
+}
+
+function getNextProfileName(){
+  const usedNames=new Set(profiles.map(profile=>getProfileNameKey(profile.name)));
+  let number=1;
+  while(usedNames.has(getProfileNameKey(`Profile ${number}`))) number+=1;
+  return `Profile ${number}`;
+}
+
+function setProfileDialogError(message){
+  if(profileNameDialog?.open){
+    profileNameError.textContent=message;
+    profileNameInput.setAttribute("aria-invalid","true");
+    profileNameInput.focus();
+  }else setProfileStatus(message,"error");
+}
+
+function closeProfileNameDialog(){
+  if(profileNameDialog.open){
+    profileNameDialog.close();
+  }
+}
+
+function createProfile(name,settings){
+  if(profileNameExists(name)){
+    setProfileDialogError(`A profile named “${name}” already exists.`);
+    return false;
+  }
+  if(activeProfileId) saveSettings();
+  const previousActiveProfileId=activeProfileId;
+  const now=Date.now();
+  const profile={
+    id:generateProfileId(),
+    name,
+    settings:normalizeProfileSettings(settings),
+    createdAt:now,
+    updatedAt:now
+  };
+  profiles.push(profile);
+  activeProfileId=profile.id;
+  if(!persistProfiles()){
+    profiles=profiles.filter(item=>item.id!==profile.id);
+    activeProfileId=previousActiveProfileId;
+    setProfileDialogError("This browser could not save the profile. Try again.");
+    return false;
+  }
+  applySettings(profile.settings);
+  saveSettings();
+  renderProfileOptions(profile.id);
+  setProfileStatus(`Created “${name}”.`,"success");
+  return true;
+}
+
+function activateProfile(profileId){
+  const profile=findProfileById(profileId);
+  if(!profile || profile.id===activeProfileId) return;
+  saveSettings();
+  const previousActiveProfileId=activeProfileId;
+  activeProfileId=profile.id;
+  profile.settings=normalizeProfileSettings(profile.settings);
+  if(!persistProfiles()){
+    activeProfileId=previousActiveProfileId;
+    profileSelect.value=previousActiveProfileId;
+    setProfileStatus("This browser could not switch profiles.","error");
+    return;
+  }
+  applySettings(profile.settings);
+  saveSettings();
+  renderProfileOptions(profile.id);
+  setProfileStatus(`Loaded “${profile.name}”.`,"success");
+}
+
+function renameSelectedProfile(){
+  const profile=findProfileById(activeProfileId);
+  if(!profile) return;
+  openProfileNameDialog("rename",profile);
+}
+
+function renameProfile(profile,name){
+  if(profileNameExists(name,profile.id)){
+    setProfileDialogError(`A profile named “${name}” already exists.`);
+    return false;
+  }
+  saveSettings();
+  const previousName=profile.name;
+  profile.name=name;
+  profile.updatedAt=Date.now();
+  if(!persistProfiles()){
+    profile.name=previousName;
+    setProfileDialogError("This browser could not rename the profile. Try again.");
+    return false;
+  }
+  renderProfileOptions(profile.id);
+  setProfileStatus(`Renamed profile to “${name}”.`,"success");
+  return true;
+}
+
+function submitProfileNameDialog(event){
+  event.preventDefault();
+  const name=normalizeProfileName(profileNameInput.value);
+  if(!name){
+    profileNameError.textContent="Enter a name for this profile.";
+    profileNameInput.setAttribute("aria-invalid","true");
+    profileNameInput.focus();
+    return;
+  }
+  if(name.length>MAX_PROFILE_NAME_LENGTH){
+    profileNameError.textContent=`Profile names must be ${MAX_PROFILE_NAME_LENGTH} characters or fewer.`;
+    profileNameInput.setAttribute("aria-invalid","true");
+    profileNameInput.focus();
+    return;
+  }
+
+  const action=profileNameDialogAction;
+  const profile=action?.action==="rename" ? findProfileById(action.profileId) : null;
+  if(profileNameExists(name,profile?.id || "")){
+    profileNameError.textContent=`A profile named “${name}” already exists.`;
+    profileNameInput.setAttribute("aria-invalid","true");
+    profileNameInput.focus();
+    return;
+  }
+
+  const settings=getSelectedProfileSource()==="default" ? defaultSettings : getSettingsFromForm();
+  const saved=action?.action==="rename" && profile
+    ? renameProfile(profile,name)
+    : createProfile(name,settings);
+  if(saved) closeProfileNameDialog();
+}
+
+function deleteActiveProfile(){
+  const profile=findProfileById(activeProfileId);
+  if(!profile) return;
+  if(profiles.length<=1){
+    setProfileStatus("At least one profile must remain.","error");
+    return;
+  }
+  if(!window.confirm(`Delete the profile “${profile.name}”?`)) return;
+  saveSettings();
+  const previousProfiles=profiles;
+  const previousActiveProfileId=activeProfileId;
+  profiles=profiles.filter(item=>item.id!==profile.id);
+  const nextProfile=[...profiles].sort((a,b)=>a.name.localeCompare(b.name,undefined,{ sensitivity:"base" }))[0];
+  activeProfileId=nextProfile.id;
+  if(!persistProfiles({deletedIds:[profile.id]})){
+    profiles=previousProfiles;
+    activeProfileId=previousActiveProfileId;
+    setProfileStatus("This browser could not delete the profile.","error");
+    return;
+  }
+  applySettings(nextProfile.settings);
+  saveSettings();
+  renderProfileOptions(nextProfile.id);
+  setProfileStatus(`Deleted “${profile.name}”. Switched to “${nextProfile.name}”.`,"success");
+}
+
+function persistSettings(){
+  const settings=normalizeSavedSettings(getSettingsFromForm());
+  const activeProfile=findProfileById(activeProfileId);
+  if(activeProfile){
+    activeProfile.settings=normalizeProfileSettings(settings);
+    activeProfile.updatedAt=Date.now();
+  }
+  try{
+    window.localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));
+    if(activeProfile) persistProfiles();
   }catch(e){}
 }
 
@@ -422,13 +787,19 @@ function applySettings(settings){
   beepVolumeValue.textContent=formatBeepVolume(beepVolumeSelect.value);
   beepVolume=normalizeBeepVolumeSetting(beepVolumeSelect.value);
   beepToggle.checked=settings.beepEnabled;
-  themeToggle.checked=settings.darkMode;
+  if(Object.prototype.hasOwnProperty.call(settings,"darkMode")){
+    themeToggle.setAttribute("aria-pressed",String(!!settings.darkMode));
+    themeToggle.setAttribute("aria-label",settings.darkMode ? "Disable dark mode" : "Enable dark mode");
+    themeToggle.title=settings.darkMode ? "Disable dark mode" : "Enable dark mode";
+  }
   showIntervalTimingToggle.checked=settings.showIntervalTiming;
   hideTimerDuringSessionToggle.checked=settings.hideTimerDuringSession;
   intervalIncrementValue.textContent=settings.intervalIncrement;
   updateThresholdLabels();
   currentInterval.textContent=settings.startingInterval;
-  applyTheme(settings.darkMode);
+  if(Object.prototype.hasOwnProperty.call(settings,"darkMode")){
+    applyTheme(!!settings.darkMode);
+  }
   intervalIncrement=parseInt(intervalIncrementSelect.value)||parseInt(defaultSettings.intervalIncrement);
   playbackSpeed=parseFloat(playbackSpeedSelect.value)||1;
   showAdvancedSettingsToggle.checked=settings.showAdvancedSettings;
@@ -442,7 +813,7 @@ function handleSettingsChange(event){
   const target=event?.currentTarget || event?.target;
 
   if(target===themeToggle){
-    applyTheme(themeToggle.checked);
+    applyTheme(themeToggle.getAttribute("aria-pressed")==="true");
   }else if(target===modeSelect){
     applyArithmeticMode(modeSelect.value);
   }else if(target===nBackLevelInput){
@@ -3277,6 +3648,12 @@ function syncNBackInfoAria(){
   nBackInfoBtn.setAttribute("aria-expanded",String(isVisible));
 }
 
+function syncProfileInfoAria(){
+  if(!profileHelp || !profileInfoBtn) return;
+  const isVisible=profileHelp.classList.contains("tooltip-pinned") || profileInfoBtn.matches(":hover");
+  profileInfoBtn.setAttribute("aria-expanded",String(isVisible));
+}
+
 function updateHistoryPaginationControls(pageData){
   const pageCount=Number(pageData?.pageCount)||0;
   if(historyPaginationSummary){
@@ -4646,6 +5023,21 @@ const themeToggle=document.getElementById("themeToggle");
 const showIntervalTimingToggle=document.getElementById("showIntervalTimingToggle");
 const hideTimerDuringSessionToggle=document.getElementById("hideTimerDuringSessionToggle");
 const resetSettingsBtn=document.getElementById("resetSettingsBtn");
+const profileSelect=document.getElementById("profileSelect");
+const newProfileBtn=document.getElementById("newProfileBtn");
+const renameProfileBtn=document.getElementById("renameProfileBtn");
+const deleteProfileBtn=document.getElementById("deleteProfileBtn");
+const profileStatus=document.getElementById("profileStatus");
+const profileHelp=document.querySelector(".profile-help");
+const profileInfoBtn=document.getElementById("profileInfoBtn");
+const profileNameDialog=document.getElementById("profileNameDialog");
+const profileNameForm=document.getElementById("profileNameForm");
+const profileNameDialogTitle=document.getElementById("profileNameDialogTitle");
+const profileNameInput=document.getElementById("profileNameInput");
+const profileSourceField=document.getElementById("profileSourceField");
+const profileNameError=document.getElementById("profileNameError");
+const cancelProfileNameBtn=document.getElementById("cancelProfileNameBtn");
+const confirmProfileNameBtn=document.getElementById("confirmProfileNameBtn");
 const playbackSpeedValue=document.getElementById("playbackSpeedValue");
 const currentInterval=document.getElementById("currentInterval");
 const timeLeft=document.getElementById("timeLeft");
@@ -4746,6 +5138,55 @@ toggleSessionTimerBtn.addEventListener("pointerdown",event=>{
 });
 newSessionBtn.onclick=()=>setSessionState("idle");
 resetSettingsBtn.onclick=resetSettingsToDefault;
+themeToggle.onclick=()=>{
+  const isDark=themeToggle.getAttribute("aria-pressed")==="true";
+  themeToggle.setAttribute("aria-pressed",String(!isDark));
+  handleSettingsChange({ currentTarget:themeToggle });
+};
+profileSelect.onchange=()=>{
+  activateProfile(profileSelect.value);
+};
+newProfileBtn.onclick=()=>openProfileNameDialog("create");
+renameProfileBtn.onclick=renameSelectedProfile;
+deleteProfileBtn.onclick=deleteActiveProfile;
+profileInfoBtn.onpointerenter=()=>{
+  syncProfileInfoAria();
+};
+profileInfoBtn.onpointerleave=()=>{
+  setTimeout(syncProfileInfoAria,0);
+};
+profileInfoBtn.onclick=event=>{
+  event.stopPropagation();
+  profileHelp.classList.toggle("tooltip-pinned");
+  syncProfileInfoAria();
+};
+profileNameForm.addEventListener("submit",submitProfileNameDialog);
+cancelProfileNameBtn.onclick=closeProfileNameDialog;
+profileNameInput.addEventListener("input",()=>{
+  profileNameError.textContent="";
+  profileNameInput.removeAttribute("aria-invalid");
+});
+profileNameDialog.addEventListener("close",()=>{
+  profileNameDialogAction=null;
+  if(profileNameDialogTrigger instanceof HTMLElement){
+    profileNameDialogTrigger.focus();
+  }
+  profileNameDialogTrigger=null;
+});
+window.addEventListener("storage",event=>{
+  if(event.key!==PROFILES_KEY || event.storageArea!==window.localStorage) return;
+  if(settingsSaveTimerId!==null){
+    clearTimeout(settingsSaveTimerId);
+    settingsSaveTimerId=null;
+  }
+  const savedProfileState=readSavedProfiles();
+  profiles=savedProfileState.profiles;
+  activeProfileId=savedProfileState.activeProfileId || profiles[0]?.id || "";
+  const activeProfile=findProfileById(activeProfileId);
+  if(activeProfile) applySettings(activeProfile.settings);
+  renderProfileOptions(activeProfileId);
+  setProfileStatus("Profiles updated in another tab.");
+});
 historyBtn.onclick=()=>{
   setHistoryVisible(true);
   void refreshHistoryView();
@@ -4941,6 +5382,10 @@ document.addEventListener("click",event=>{
     nBackHelp.classList.remove("tooltip-pinned");
     syncNBackInfoAria();
   }
+  if(!profileHelp.contains(event.target)){
+    profileHelp.classList.remove("tooltip-pinned");
+    syncProfileInfoAria();
+  }
 },true);
 document.addEventListener("click",event=>{
   if(historyFilterVisible && historyFiltersPanel && historyFilterBtn && !historyFiltersPanel.contains(event.target) && !historyFilterBtn.contains(event.target)){
@@ -4971,6 +5416,12 @@ document.addEventListener("keydown",event=>{
     nBackHelp.classList.remove("tooltip-pinned");
     nBackInfoBtn.focus();
     syncNBackInfoAria();
+  }
+  if(profileHelp && (profileHelp.classList.contains("tooltip-pinned")
+    || profileInfoBtn.matches(":hover"))){
+    profileHelp.classList.remove("tooltip-pinned");
+    profileInfoBtn.focus();
+    syncProfileInfoAria();
   }
 });
 showAdvancedSettingsToggle.addEventListener("change",()=>{
@@ -5039,7 +5490,18 @@ window.addEventListener("pagehide",()=>{
 });
 async function initializeApp(){
   await refreshVoiceLibrary();
-  applySettings(readSavedSettings());
+  const savedProfileState=readSavedProfiles();
+  profiles=savedProfileState.profiles;
+  activeProfileId=savedProfileState.activeProfileId || profiles[0]?.id || "";
+  if(!findProfileById(activeProfileId) && profiles[0]){
+    activeProfileId=profiles[0].id;
+  }
+  const globalSettings=readSavedSettings();
+  const activeSettings=findProfileById(activeProfileId)?.settings || globalSettings;
+  applySettings({ ...activeSettings, darkMode:globalSettings.darkMode });
+  persistProfiles();
+  persistSettings();
+  renderProfileOptions(activeProfileId);
   setSessionState("idle");
   historyVisible=false;
   updateAppViews();

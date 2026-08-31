@@ -287,16 +287,53 @@
 
 <div id="settingsView">
   <div class="settings">
-    <label class="toggle-field advanced-master-toggle">
-      <input type="checkbox" id="showAdvancedSettingsToggle">
-      Show Advanced Settings
-    </label>
+    <div class="settings-top-row">
+      <label class="toggle-field advanced-master-toggle">
+        <input type="checkbox" id="showAdvancedSettingsToggle">
+        Show Advanced Settings
+      </label>
+      <button id="themeToggle" class="theme-toggle-button" type="button" aria-pressed="false" aria-label="Enable dark mode" title="Enable dark mode">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M20.5 15.3A8.5 8.5 0 0 1 8.7 3.5 8.5 8.5 0 1 0 20.5 15.3Z"></path>
+        </svg>
+      </button>
+    </div>
+
+    <section class="settings-section profiles-section">
+      <div class="section-header">
+        <span>Profiles</span>
+        <span class="profile-help settings-tooltip">
+          <button
+            id="profileInfoBtn"
+            class="icon-button info-button"
+            type="button"
+            aria-expanded="false"
+            aria-label="Profiles help"
+            title="Profiles help"
+          >i</button>
+          <span class="tooltip-box" role="tooltip">Your active profile updates automatically when you change settings.</span>
+        </span>
+      </div>
+      <div class="profile-manager">
+        <label class="profile-select-field" for="profileSelect">
+          <span>Active profile</span>
+          <select id="profileSelect">
+            <option value="">Loading profile…</option>
+          </select>
+        </label>
+        <div class="profile-actions">
+          <button id="newProfileBtn" class="secondary-button" type="button">New Profile</button>
+          <button id="renameProfileBtn" class="secondary-button" type="button" disabled>Rename</button>
+          <button id="deleteProfileBtn" class="secondary-button danger-button" type="button" disabled>Delete</button>
+        </div>
+      </div>
+      <p id="profileStatus" class="profile-status" aria-live="polite"></p>
+    </section>
 
     <div class="settings-columns">
       <div class="settings-column">
         <section class="settings-section">
           <div class="section-header">Appearance</div>
-          <label class="toggle-field"><input type="checkbox" id="themeToggle"> Dark mode</label>
           <label class="toggle-field">
             <input type="checkbox" id="hideTimerDuringSessionToggle">
             Hide timer during sessions
@@ -463,6 +500,27 @@
   </div>
 </div>
 </div>
+<dialog id="profileNameDialog" class="profile-name-dialog" aria-labelledby="profileNameDialogTitle">
+  <form id="profileNameForm" class="profile-name-form" novalidate>
+    <div class="profile-name-dialog-header">
+      <h2 id="profileNameDialogTitle">New Profile</h2>
+    </div>
+    <label class="profile-name-field" for="profileNameInput">
+      <span>Profile name</span>
+      <input id="profileNameInput" type="text" maxlength="60" autocomplete="off" required>
+    </label>
+    <fieldset id="profileSourceField" class="profile-source-field">
+      <legend>Start with</legend>
+      <label><input type="radio" name="profileSource" value="current" checked> Current settings</label>
+      <label><input type="radio" name="profileSource" value="default"> Default settings</label>
+    </fieldset>
+    <p id="profileNameError" class="profile-name-error" aria-live="polite"></p>
+    <div class="profile-dialog-actions">
+      <button id="cancelProfileNameBtn" class="secondary-button" type="button">Cancel</button>
+      <button id="confirmProfileNameBtn" class="primary-button" type="submit">Create Profile</button>
+    </div>
+  </form>
+</dialog>
 <div id="footerView" class="footer">
 <p>Thanks to EEE for supplying the original source code</p>
 </div>
