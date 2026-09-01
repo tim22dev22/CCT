@@ -278,8 +278,8 @@
       </div>
     </div>
     <div class="history-reset-zone">
-      <div class="history-reset-note">Deletes saved history in this browser.</div>
-      <button id="clearSessionsOnlyBtn" class="secondary-button danger-button" type="button">Clear Sessions, Keep Totals</button>
+      <div class="history-reset-note">Deletes detailed sessions while preserving lifetime totals and trend graphs.</div>
+      <button id="clearSessionsOnlyBtn" class="secondary-button danger-button" type="button">Clear Session Details</button>
       <button id="clearAllHistoryBtn" class="secondary-button danger-button" type="button">Clear All History</button>
     </div>
   </div>
@@ -493,7 +493,7 @@
 
   <button id="startBtn" class="primary-button">Start</button>
   <div class="settings-reset-zone">
-    <button id="resetSettingsBtn" class="secondary-button danger-button settings-reset-button" type="button">Reset Settings to Default</button>
+    <button id="resetSettingsBtn" class="secondary-button danger-button settings-reset-button" type="button">Reset Active Profile to Defaults</button>
   </div>
   <div class="settings-history-zone">
     <button id="historyBtn" class="secondary-button" type="button">Training History</button>
@@ -518,6 +518,18 @@
     <div class="profile-dialog-actions">
       <button id="cancelProfileNameBtn" class="secondary-button" type="button">Cancel</button>
       <button id="confirmProfileNameBtn" class="primary-button" type="submit">Create Profile</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="confirmationDialog" class="profile-name-dialog confirmation-dialog" aria-labelledby="confirmationDialogTitle" aria-describedby="confirmationDialogMessage">
+  <form id="confirmationForm" class="profile-name-form confirmation-form" novalidate>
+    <div class="profile-name-dialog-header">
+      <h2 id="confirmationDialogTitle">Confirm action</h2>
+    </div>
+    <p id="confirmationDialogMessage" class="confirmation-dialog-message"></p>
+    <div class="profile-dialog-actions">
+      <button id="cancelConfirmationBtn" class="secondary-button" type="button">Cancel</button>
+      <button id="confirmConfirmationBtn" class="secondary-button danger-button" type="submit">Confirm</button>
     </div>
   </form>
 </dialog>

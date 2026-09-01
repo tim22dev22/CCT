@@ -31,7 +31,6 @@ let historyChartNBackLevelIsUserSelected=false;
 let historyPageIndex=0;
 let historyTrendRefreshToken=0;
 let historySessionRefreshToken=0;
-let historyTrendUpdateChain=Promise.resolve();
 let settingsSaveTimerId=null;
 let intervalStatsTimerId=null;
 let countdownTimerId=null;
@@ -39,6 +38,9 @@ let profiles=[];
 let activeProfileId="";
 let profileNameDialogAction=null;
 let profileNameDialogTrigger=null;
+let confirmationDialogAction=null;
+let confirmationDialogTrigger=null;
+let confirmationDialogFocusTimerId=null;
 const HISTORY_PAGE_SIZE=20;
 const historyFilters={
   status:"all",
@@ -442,13 +444,17 @@ function persistProfiles(options={}){
       localById.delete(profile.id);
     });
     localById.forEach(profile=>merged.push(profile));
-    profiles=normalizeProfileList(merged);
-    if(!findProfileById(activeProfileId)) activeProfileId=latest.activeProfileId || profiles[0]?.id || "";
+    const nextProfiles=normalizeProfileList(merged);
+    const nextActiveProfileId=nextProfiles.some(profile=>profile.id===activeProfileId)
+      ? activeProfileId
+      : latest.activeProfileId || nextProfiles[0]?.id || "";
     window.localStorage.setItem(PROFILES_KEY,JSON.stringify({
       schemaVersion:PROFILES_SCHEMA_VERSION,
-      activeProfileId,
-      profiles
+      activeProfileId:nextActiveProfileId,
+      profiles:nextProfiles
     }));
+    profiles=nextProfiles;
+    activeProfileId=nextActiveProfileId;
     return true;
   }catch(e){
     return false;
@@ -551,6 +557,41 @@ function closeProfileNameDialog(){
   }
 }
 
+function openConfirmationDialog({ title, message, confirmLabel="Confirm", onConfirm }){
+  if(confirmationDialog.open) return;
+  if(confirmationDialogFocusTimerId!==null){
+    clearTimeout(confirmationDialogFocusTimerId);
+    confirmationDialogFocusTimerId=null;
+  }
+  confirmationDialogAction=onConfirm;
+  confirmationDialogTrigger=document.activeElement;
+  confirmationDialogTitle.textContent=title;
+  confirmationDialogMessage.textContent=message;
+  confirmConfirmationBtn.textContent=confirmLabel;
+  confirmationDialog.showModal();
+  confirmationDialogFocusTimerId=setTimeout(()=>{
+    confirmationDialogFocusTimerId=null;
+    if(confirmationDialog.open) cancelConfirmationBtn.focus();
+  },0);
+}
+
+function closeConfirmationDialog(){
+  if(confirmationDialogFocusTimerId!==null){
+    clearTimeout(confirmationDialogFocusTimerId);
+    confirmationDialogFocusTimerId=null;
+  }
+  if(confirmationDialog.open){
+    confirmationDialog.close();
+  }
+}
+
+function submitConfirmationDialog(event){
+  event.preventDefault();
+  const action=confirmationDialogAction;
+  closeConfirmationDialog();
+  if(typeof action==="function") void action();
+}
+
 function createProfile(name,settings){
   if(profileNameExists(name)){
     setProfileDialogError(`A profile named “${name}” already exists.`);
@@ -581,7 +622,7 @@ function createProfile(name,settings){
   });
   saveSettings();
   renderProfileOptions(profile.id);
-  setProfileStatus(`Created “${name}”.`,"success");
+  setProfileStatus("");
   return true;
 }
 
@@ -605,7 +646,7 @@ function activateProfile(profileId){
   });
   saveSettings();
   renderProfileOptions(profile.id);
-  setProfileStatus(`Loaded “${profile.name}”.`,"success");
+  setProfileStatus("");
 }
 
 function renameSelectedProfile(){
@@ -629,7 +670,7 @@ function renameProfile(profile,name){
     return false;
   }
   renderProfileOptions(profile.id);
-  setProfileStatus(`Renamed profile to “${name}”.`,"success");
+  setProfileStatus("");
   return true;
 }
 
@@ -672,40 +713,67 @@ function deleteActiveProfile(){
     setProfileStatus("At least one profile must remain.","error");
     return;
   }
-  if(!window.confirm(`Delete the profile “${profile.name}”?`)) return;
-  saveSettings();
-  const previousProfiles=profiles;
-  const previousActiveProfileId=activeProfileId;
-  profiles=profiles.filter(item=>item.id!==profile.id);
-  const nextProfile=[...profiles].sort((a,b)=>a.name.localeCompare(b.name,undefined,{ sensitivity:"base" }))[0];
-  activeProfileId=nextProfile.id;
-  if(!persistProfiles({deletedIds:[profile.id]})){
-    profiles=previousProfiles;
-    activeProfileId=previousActiveProfileId;
-    setProfileStatus("This browser could not delete the profile.","error");
-    return;
-  }
-  applySettings({
-    ...nextProfile.settings,
-    showAdvancedSettings:showAdvancedSettingsToggle.checked,
-    darkMode:themeToggle.getAttribute("aria-pressed")==="true"
+  openConfirmationDialog({
+    title:"Delete Profile",
+    message:`Delete the profile “${profile.name}”? This cannot be undone.`,
+    confirmLabel:"Delete Profile",
+    onConfirm:()=>{
+      if(activeProfileId!==profile.id){
+        setProfileStatus("The active profile changed. No profile was deleted.","error");
+        return;
+      }
+      saveSettings();
+      const previousProfiles=profiles;
+      const previousActiveProfileId=activeProfileId;
+      profiles=profiles.filter(item=>item.id!==profile.id);
+      const nextProfile=[...profiles].sort((a,b)=>a.name.localeCompare(b.name,undefined,{ sensitivity:"base" }))[0];
+      activeProfileId=nextProfile.id;
+      if(!persistProfiles({deletedIds:[profile.id]})){
+        profiles=previousProfiles;
+        activeProfileId=previousActiveProfileId;
+        setProfileStatus("This browser could not delete the profile.","error");
+        return;
+      }
+      applySettings({
+        ...nextProfile.settings,
+        showAdvancedSettings:showAdvancedSettingsToggle.checked,
+        darkMode:themeToggle.getAttribute("aria-pressed")==="true"
+      });
+      saveSettings();
+      renderProfileOptions(nextProfile.id);
+      setProfileStatus("");
+    }
   });
-  saveSettings();
-  renderProfileOptions(nextProfile.id);
-  setProfileStatus(`Deleted “${profile.name}”. Switched to “${nextProfile.name}”.`,"success");
 }
 
 function persistSettings(){
   const settings=normalizeSavedSettings(getSettingsFromForm());
   const activeProfile=findProfileById(activeProfileId);
+  let previousSettings=null;
+  let previousUpdatedAt=null;
+  let previousSettingsRaw=null;
   if(activeProfile){
+    previousSettings={...activeProfile.settings};
+    previousUpdatedAt=activeProfile.updatedAt;
     activeProfile.settings=normalizeProfileSettings(settings);
     activeProfile.updatedAt=Date.now();
   }
   try{
+    previousSettingsRaw=window.localStorage.getItem(SETTINGS_KEY);
     window.localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));
-    if(activeProfile) persistProfiles();
-  }catch(e){}
+    if(activeProfile && !persistProfiles()) throw new Error("Failed to persist profile settings");
+    return true;
+  }catch(e){
+    if(activeProfile){
+      activeProfile.settings=previousSettings;
+      activeProfile.updatedAt=previousUpdatedAt;
+    }
+    try{
+      if(previousSettingsRaw===null) window.localStorage.removeItem(SETTINGS_KEY);
+      else window.localStorage.setItem(SETTINGS_KEY,previousSettingsRaw);
+    }catch(restoreError){}
+    return false;
+  }
 }
 
 function saveSettings(){
@@ -713,7 +781,7 @@ function saveSettings(){
     clearTimeout(settingsSaveTimerId);
     settingsSaveTimerId=null;
   }
-  persistSettings();
+  return persistSettings();
 }
 
 function scheduleSettingsSave(){
@@ -727,9 +795,37 @@ function scheduleSettingsSave(){
 }
 
 function resetSettingsToDefault(){
-  const defaults={...defaultSettings};
-  applySettings(defaults);
-  saveSettings();
+  const activeProfile=findProfileById(activeProfileId);
+  if(!activeProfile) return;
+  const profileId=activeProfile.id;
+  const profileName=activeProfile.name;
+  openConfirmationDialog({
+    title:"Reset Profile",
+    message:`Reset “${profileName}” to default settings? This cannot be undone.`,
+    confirmLabel:"Reset Profile",
+    onConfirm:()=>{
+      if(activeProfileId!==profileId){
+        setProfileStatus("The active profile changed. No settings were reset.","error");
+        return;
+      }
+      const currentProfile=findProfileById(profileId);
+      if(!currentProfile) return;
+      const previousSettings={...currentProfile.settings};
+      const defaults={
+        ...defaultSettings,
+        darkMode:themeToggle.getAttribute("aria-pressed")==="true",
+        showAdvancedSettings:showAdvancedSettingsToggle.checked
+      };
+      applySettings(defaults);
+      if(!saveSettings()){
+        currentProfile.settings=previousSettings;
+        applySettings(previousSettings);
+        setProfileStatus("This browser could not save the reset settings.","error");
+        return;
+      }
+      setProfileStatus("");
+    }
+  });
 }
 
 function applyTheme(isDark){
@@ -1151,6 +1247,13 @@ function txDone(tx){
   });
 }
 
+function requestToPromise(request,errorMessage){
+  return new Promise((resolve,reject)=>{
+    request.onsuccess=()=>resolve(request.result);
+    request.onerror=()=>reject(request.error || new Error(errorMessage));
+  });
+}
+
 function normalizeHistoryRecord(record){
   const startedAt=Number(record?.startedAt)||Number(record?.endedAt)||Date.now();
   const endedAt=Number(record?.endedAt)||startedAt;
@@ -1238,15 +1341,164 @@ function normalizeLatestTraceRecord(record){
   };
 }
 
+function getTrendBucketId(dayKey,mode,nBackLevel){
+  return [dayKey,mode,normalizeNBackLevel(nBackLevel)].join("|");
+}
+
+function normalizeTrendBucket(record){
+  const mode=ARITHMETIC_MODES.has(record?.mode) ? record.mode : defaultSettings.mode;
+  const nBackLevel=normalizeNBackLevel(record?.nBackLevel);
+  const dayKey=String(record?.dayKey||"");
+  const dayStart=Number(record?.dayStart);
+  if(!dayKey || !Number.isFinite(dayStart)) return null;
+  return {
+    id:getTrendBucketId(dayKey,mode,nBackLevel),
+    schemaVersion:1,
+    dayKey,
+    dayStart,
+    mode,
+    nBackLevel,
+    accuracyTotal:Math.max(0,Number(record?.accuracyTotal)||0),
+    accuracyWeightTotal:Math.max(0,Number(record?.accuracyWeightTotal)||0),
+    accuracyCount:Math.max(0,Number(record?.accuracyCount)||0),
+    responseTotal:Math.max(0,Number(record?.responseTotal)||0),
+    responseWeightTotal:Math.max(0,Number(record?.responseWeightTotal)||0),
+    responseCount:Math.max(0,Number(record?.responseCount)||0)
+  };
+}
+
+function getTrendBucketContribution(session){
+  if(!isTrendEligibleSession(session)) return null;
+  const mode=ARITHMETIC_MODES.has(session?.arithmeticMode) ? session.arithmeticMode : defaultSettings.mode;
+  const nBackLevel=normalizeNBackLevel(session?.nBackLevel);
+  const timestamp=Number(session?.endedAt||session?.startedAt||Date.now());
+  const date=new Date(timestamp);
+  const dayKey=[
+    date.getFullYear(),
+    String(date.getMonth()+1).padStart(2,"0"),
+    String(date.getDate()).padStart(2,"0")
+  ].join("-");
+  const weight=Math.max(1,Number(session?.totalQuestionsAsked)||0);
+  const accuracy=Number(session?.accuracy);
+  const responseTime=Number(session?.averageResponseTimeMs);
+  return {
+    id:getTrendBucketId(dayKey,mode,nBackLevel),
+    schemaVersion:1,
+    dayKey,
+    dayStart:new Date(date.getFullYear(),date.getMonth(),date.getDate()).getTime(),
+    mode,
+    nBackLevel,
+    accuracyTotal:Number.isFinite(accuracy) ? accuracy*weight : 0,
+    accuracyWeightTotal:Number.isFinite(accuracy) ? weight : 0,
+    accuracyCount:Number.isFinite(accuracy) ? 1 : 0,
+    responseTotal:Number.isFinite(responseTime) ? responseTime*weight : 0,
+    responseWeightTotal:Number.isFinite(responseTime) ? weight : 0,
+    responseCount:Number.isFinite(responseTime) ? 1 : 0
+  };
+}
+
+function applyTrendBucketContribution(buckets,contribution,factor){
+  if(!contribution) return;
+  const current=buckets.get(contribution.id) || {
+    id:contribution.id,
+    schemaVersion:1,
+    dayKey:contribution.dayKey,
+    dayStart:contribution.dayStart,
+    mode:contribution.mode,
+    nBackLevel:contribution.nBackLevel,
+    accuracyTotal:0,
+    accuracyWeightTotal:0,
+    accuracyCount:0,
+    responseTotal:0,
+    responseWeightTotal:0,
+    responseCount:0
+  };
+  if(!current) return;
+  current.accuracyTotal=Math.max(0,current.accuracyTotal + factor*contribution.accuracyTotal);
+  current.accuracyWeightTotal=Math.max(0,current.accuracyWeightTotal + factor*contribution.accuracyWeightTotal);
+  current.accuracyCount=Math.max(0,current.accuracyCount + factor*contribution.accuracyCount);
+  current.responseTotal=Math.max(0,current.responseTotal + factor*contribution.responseTotal);
+  current.responseWeightTotal=Math.max(0,current.responseWeightTotal + factor*contribution.responseWeightTotal);
+  current.responseCount=Math.max(0,current.responseCount + factor*contribution.responseCount);
+  if(current.accuracyWeightTotal || current.responseWeightTotal){
+    buckets.set(current.id,current);
+  }else{
+    buckets.delete(current.id);
+  }
+}
+
+function subtractTrendBucketContribution(bucket,contribution){
+  const normalized=normalizeTrendBucket(bucket);
+  if(!normalized || !contribution) return normalized;
+  return {
+    ...normalized,
+    accuracyTotal:Math.max(0,normalized.accuracyTotal-contribution.accuracyTotal),
+    accuracyWeightTotal:Math.max(0,normalized.accuracyWeightTotal-contribution.accuracyWeightTotal),
+    accuracyCount:Math.max(0,normalized.accuracyCount-contribution.accuracyCount),
+    responseTotal:Math.max(0,normalized.responseTotal-contribution.responseTotal),
+    responseWeightTotal:Math.max(0,normalized.responseWeightTotal-contribution.responseWeightTotal),
+    responseCount:Math.max(0,normalized.responseCount-contribution.responseCount)
+  };
+}
+
+function buildTrendBucketsFromSessions(sessions){
+  const buckets=new Map();
+  (Array.isArray(sessions) ? sessions : []).forEach(session=>{
+    applyTrendBucketContribution(buckets,getTrendBucketContribution(session),1);
+  });
+  return [...buckets.values()];
+}
+
+function buildTrendDataFromBuckets(buckets,mode,nBackLevel){
+  const resolvedMode=ARITHMETIC_MODES.has(mode) ? mode : defaultSettings.mode;
+  const resolvedNBackLevel=normalizeNBackLevel(nBackLevel);
+  const accuracyBuckets=new Map();
+  const responseBuckets=new Map();
+  (Array.isArray(buckets) ? buckets : []).forEach(rawBucket=>{
+    const bucket=normalizeTrendBucket(rawBucket);
+    if(!bucket || bucket.mode!==resolvedMode || bucket.nBackLevel!==resolvedNBackLevel) return;
+    if(bucket.accuracyWeightTotal){
+      accuracyBuckets.set(bucket.dayKey,{
+        dayKey:bucket.dayKey,
+        dayStart:bucket.dayStart,
+        total:bucket.accuracyTotal,
+        weightTotal:bucket.accuracyWeightTotal,
+        count:bucket.accuracyCount
+      });
+    }
+    if(bucket.responseWeightTotal){
+      responseBuckets.set(bucket.dayKey,{
+        dayKey:bucket.dayKey,
+        dayStart:bucket.dayStart,
+        total:bucket.responseTotal,
+        weightTotal:bucket.responseWeightTotal,
+        count:bucket.responseCount
+      });
+    }
+  });
+  return {
+    accuracyPoints:finalizeDailyTrendBuckets(accuracyBuckets),
+    responsePoints:finalizeDailyTrendBuckets(responseBuckets),
+    mode:resolvedMode,
+    nBackLevel:resolvedNBackLevel
+  };
+}
+
 const sessionHistoryStore=(()=>{
   const DB_NAME="cct-session-history";
-  const DB_VERSION=4;
+  const DB_VERSION=6;
   const STORE_NAME="sessions";
   const TRACE_STORE_NAME="latestTrace";
   const TOTALS_STORE_NAME="historyTotals";
+  const TREND_STORE_NAME="trendBuckets";
+  const TREND_META_ID="__meta__";
+  const TREND_SCHEMA_VERSION=2;
   const ENDED_AT_INDEX_NAME="endedAt";
+  const IMPORT_LEDGER_KEY="cct-session-history-imports";
   const fallbackSessions=[];
+  const fallbackTrendBuckets=[];
   let fallbackLatestTrace=null;
+  let trendBucketsInitialized=false;
   let fallbackTotals={
     completedSessions:0,
     totalCorrectAnswers:0,
@@ -1255,8 +1507,16 @@ const sessionHistoryStore=(()=>{
   const HISTORY_BACKUP_KEY="cct-session-history-backup";
   let hasBackupSnapshot=false;
   let backupMigrationPromise=null;
+  let trendInitializationPromise=null;
+  let historyWriteChain=Promise.resolve();
   let dbPromise=null;
   const supportsIndexedDB=typeof window.indexedDB!=="undefined";
+
+  function enqueueHistoryWrite(operation){
+    const queued=historyWriteChain.then(operation,operation);
+    historyWriteChain=queued.catch(()=>{});
+    return queued;
+  }
 
   function loadBackupSnapshot(){
     try{
@@ -1265,6 +1525,7 @@ const sessionHistoryStore=(()=>{
       const parsed=JSON.parse(saved);
       return {
         sessions:Array.isArray(parsed?.sessions) ? parsed.sessions.map(normalizeHistoryRecord) : [],
+        trendBuckets:Array.isArray(parsed?.trendBuckets) ? parsed.trendBuckets.map(normalizeTrendBucket).filter(Boolean) : null,
         latestTrace:parsed?.latestSessionTrace ? normalizeLatestTraceRecord(parsed.latestSessionTrace) : null,
         totals:parsed?.historyTotals ? normalizeTotalsRecord(parsed.historyTotals) : createEmptyTotals()
       };
@@ -1273,12 +1534,43 @@ const sessionHistoryStore=(()=>{
     }
   }
 
+  function hasImportedBackup(importKey){
+    if(!importKey) return false;
+    try{
+      const raw=window.localStorage.getItem(IMPORT_LEDGER_KEY);
+      const keys=raw ? JSON.parse(raw) : [];
+      return Array.isArray(keys) && keys.includes(importKey);
+    }catch(e){
+      return false;
+    }
+  }
+
+  function rememberImportedBackup(importKey){
+    if(!importKey) return;
+    try{
+      const raw=window.localStorage.getItem(IMPORT_LEDGER_KEY);
+      const parsed=raw ? JSON.parse(raw) : [];
+      const keys=Array.isArray(parsed) ? parsed : [];
+      const next=[...new Set([...keys,importKey])].slice(-25);
+      window.localStorage.setItem(IMPORT_LEDGER_KEY,JSON.stringify(next));
+    }catch(e){}
+  }
+
+  function clearImportedBackupLedger(){
+    try{
+      window.localStorage.removeItem(IMPORT_LEDGER_KEY);
+    }catch(e){}
+  }
+
   function persistBackupSnapshot(){
     try{
       const snapshot={
-        schemaVersion:1,
+        schemaVersion:2,
         exportedAt:new Date().toISOString(),
         sessions:fallbackSessions.map(normalizeHistoryRecord),
+        trendBuckets:trendBucketsInitialized
+          ? fallbackTrendBuckets.map(normalizeTrendBucket).filter(Boolean)
+          : undefined,
         latestSessionTrace:fallbackLatestTrace ? normalizeLatestTraceRecord(fallbackLatestTrace) : null,
         historyTotals:normalizeTotalsRecord(fallbackTotals)
       };
@@ -1289,6 +1581,10 @@ const sessionHistoryStore=(()=>{
   const initialBackup=loadBackupSnapshot();
   if(initialBackup){
     fallbackSessions.push(...initialBackup.sessions);
+    if(initialBackup.trendBuckets){
+      fallbackTrendBuckets.push(...initialBackup.trendBuckets);
+      trendBucketsInitialized=true;
+    }
     fallbackLatestTrace=initialBackup.latestTrace;
     fallbackTotals=initialBackup.totals;
     hasBackupSnapshot=!supportsIndexedDB;
@@ -1301,7 +1597,11 @@ const sessionHistoryStore=(()=>{
     backupMigrationPromise=(async()=>{
       try{
         const db=await openDb();
-        const tx=db.transaction([STORE_NAME,TRACE_STORE_NAME,TOTALS_STORE_NAME],"readwrite");
+        if(!trendBucketsInitialized){
+          fallbackTrendBuckets.push(...buildTrendBucketsFromSessions(fallbackSessions));
+          trendBucketsInitialized=true;
+        }
+        const tx=db.transaction([STORE_NAME,TRACE_STORE_NAME,TOTALS_STORE_NAME,TREND_STORE_NAME],"readwrite");
         const sessionStore=tx.objectStore(STORE_NAME);
         fallbackSessions.forEach(session=>{
           sessionStore.put(normalizeHistoryRecord(session));
@@ -1310,6 +1610,10 @@ const sessionHistoryStore=(()=>{
           tx.objectStore(TRACE_STORE_NAME).put(normalizeLatestTraceRecord(fallbackLatestTrace));
         }
         tx.objectStore(TOTALS_STORE_NAME).put(normalizeTotalsRecord(fallbackTotals));
+        const trendStore=tx.objectStore(TREND_STORE_NAME);
+        trendStore.clear();
+        fallbackTrendBuckets.forEach(bucket=>trendStore.put(normalizeTrendBucket(bucket)));
+        trendStore.put({id:TREND_META_ID,schemaVersion:TREND_SCHEMA_VERSION});
         await txDone(tx);
         hasBackupSnapshot=false;
       }catch(e){}
@@ -1349,6 +1653,9 @@ const sessionHistoryStore=(()=>{
         if(!db.objectStoreNames.contains(TOTALS_STORE_NAME)){
           db.createObjectStore(TOTALS_STORE_NAME,{ keyPath:"id" });
         }
+        if(!db.objectStoreNames.contains(TREND_STORE_NAME)){
+          db.createObjectStore(TREND_STORE_NAME,{ keyPath:"id" });
+        }
       };
 
       request.onsuccess=()=>resolve(request.result);
@@ -1357,63 +1664,208 @@ const sessionHistoryStore=(()=>{
     return dbPromise;
   }
 
-  async function saveSession(record){
-    const normalized=normalizeHistoryRecord(record);
-    const previousSession=await getStoredSessionById(normalized.sessionId);
-    const previousDelta=previousSession ? getSessionTotalsDelta(previousSession) : null;
-    const nextDelta=getSessionTotalsDelta(normalized);
+  async function readTrendBucketsFromDb(){
     if(!supportsIndexedDB){
+      return fallbackTrendBuckets.map(normalizeTrendBucket).filter(Boolean);
+    }
+    await migrateBackupSnapshotToIndexedDb();
+    if(hasBackupSnapshot){
+      return fallbackTrendBuckets.map(normalizeTrendBucket).filter(Boolean);
+    }
+    try{
+      const db=await openDb();
+      const tx=db.transaction(TREND_STORE_NAME,"readonly");
+      const records=await requestToPromise(
+        tx.objectStore(TREND_STORE_NAME).getAll(),
+        "Failed to read trend data"
+      );
+      return records.map(normalizeTrendBucket).filter(Boolean);
+    }catch(e){
+      return fallbackTrendBuckets.map(normalizeTrendBucket).filter(Boolean);
+    }
+  }
+
+  async function writeTrendBucketsToDb(buckets,deletedIds=[]){
+    const normalizedBuckets=buckets.map(normalizeTrendBucket).filter(Boolean);
+    if(!supportsIndexedDB || hasBackupSnapshot){
+      fallbackTrendBuckets.length=0;
+      fallbackTrendBuckets.push(...normalizedBuckets);
+      trendBucketsInitialized=true;
+      persistBackupSnapshot();
+      return;
+    }
+    {
+      const db=await openDb();
+      const tx=db.transaction(TREND_STORE_NAME,"readwrite");
+      const store=tx.objectStore(TREND_STORE_NAME);
+      deletedIds.forEach(id=>store.delete(id));
+      normalizedBuckets.forEach(bucket=>store.put(bucket));
+      store.put({id:TREND_META_ID,schemaVersion:TREND_SCHEMA_VERSION});
+      await txDone(tx);
+      fallbackTrendBuckets.length=0;
+      fallbackTrendBuckets.push(...normalizedBuckets);
+      trendBucketsInitialized=true;
+      persistBackupSnapshot();
+    }
+  }
+
+  async function ensureTrendBuckets(){
+    if(trendBucketsInitialized) return;
+    if(trendInitializationPromise) return trendInitializationPromise;
+    trendInitializationPromise=(async()=>{
+      if(!supportsIndexedDB){
+        fallbackTrendBuckets.length=0;
+        fallbackTrendBuckets.push(...buildTrendBucketsFromSessions(fallbackSessions));
+        trendBucketsInitialized=true;
+        persistBackupSnapshot();
+        return;
+      }
+
+      await migrateBackupSnapshotToIndexedDb();
+      if(hasBackupSnapshot) return;
+      const db=await openDb();
+      const tx=db.transaction(TREND_STORE_NAME,"readonly");
+      const records=await requestToPromise(
+        tx.objectStore(TREND_STORE_NAME).getAll(),
+        "Failed to read trend metadata"
+      );
+      const metadata=records.find(record=>record?.id===TREND_META_ID);
+      if(Number(metadata?.schemaVersion)>=TREND_SCHEMA_VERSION){
+        fallbackTrendBuckets.length=0;
+        fallbackTrendBuckets.push(...records.map(normalizeTrendBucket).filter(Boolean));
+        trendBucketsInitialized=true;
+        persistBackupSnapshot();
+        return;
+      }
+      const sessionTx=db.transaction(STORE_NAME,"readonly");
+      const stored=await requestToPromise(
+        sessionTx.objectStore(STORE_NAME).getAll(),
+        "Failed to read sessions for trend migration"
+      );
+      const rebuiltBuckets=buildTrendBucketsFromSessions(stored.map(normalizeHistoryRecord));
+      const rebuiltIds=new Set(rebuiltBuckets.map(bucket=>bucket.id));
+      const preservedBuckets=records
+        .map(normalizeTrendBucket)
+        .filter(bucket=>bucket && !rebuiltIds.has(bucket.id));
+      await writeTrendBucketsToDb([...rebuiltBuckets,...preservedBuckets]);
+    })();
+    try{
+      await trendInitializationPromise;
+    }finally{
+      trendInitializationPromise=null;
+    }
+  }
+
+  async function updateTrendBucketsNow(previousSession,nextSession){
+    await ensureTrendBuckets();
+    const previousContribution=getTrendBucketContribution(previousSession);
+    const nextContribution=getTrendBucketContribution(nextSession);
+    const buckets=new Map((await readTrendBucketsFromDb()).map(bucket=>[bucket.id,bucket]));
+    applyTrendBucketContribution(buckets,previousContribution,-1);
+    applyTrendBucketContribution(buckets,nextContribution,1);
+    await writeTrendBucketsToDb([...buckets.values()]);
+  }
+
+  function buildMergedTrendBuckets(currentBuckets,sessions,previousSessions,importedTrendBuckets){
+    const buckets=new Map(currentBuckets.map(bucket=>[bucket.id,bucket]));
+    const existingIds=new Set(buckets.keys());
+    if(Array.isArray(importedTrendBuckets)){
+      sessions.forEach(session=>{
+        const previousContribution=getTrendBucketContribution(previousSessions.get(session.sessionId));
+        const nextContribution=getTrendBucketContribution(session);
+        applyTrendBucketContribution(buckets,previousContribution,-1);
+        applyTrendBucketContribution(buckets,nextContribution,1);
+      });
+      const importedSessionBuckets=new Map(buildTrendBucketsFromSessions(sessions).map(bucket=>[bucket.id,bucket]));
+      importedTrendBuckets.forEach(bucket=>{
+        const residual=subtractTrendBucketContribution(bucket,importedSessionBuckets.get(bucket.id));
+        if(residual && (residual.accuracyWeightTotal || residual.responseWeightTotal)){
+          applyTrendBucketContribution(buckets,residual,1);
+        }
+      });
+    }else{
+      sessions.forEach(session=>{
+        const previousSession=previousSessions.get(session.sessionId);
+        applyTrendBucketContribution(buckets,getTrendBucketContribution(previousSession),-1);
+        applyTrendBucketContribution(buckets,getTrendBucketContribution(session),1);
+      });
+    }
+    const deletedIds=[...existingIds].filter(id=>!buckets.has(id));
+    return { buckets:[...buckets.values()], deletedIds };
+  }
+
+  async function mergeImportedTrendDataNow(sessions,previousSessions,importedTrendBuckets){
+    await ensureTrendBuckets();
+    const currentBuckets=await readTrendBucketsFromDb();
+    const merged=buildMergedTrendBuckets(currentBuckets,sessions,previousSessions,importedTrendBuckets);
+    await writeTrendBucketsToDb(merged.buckets,merged.deletedIds);
+  }
+
+  async function saveSessionInternal(record){
+    const normalized=normalizeHistoryRecord(record);
+    await ensureTrendBuckets();
+    if(!supportsIndexedDB){
+      const previousSession=fallbackSessions.find(session=>session.sessionId===normalized.sessionId) || null;
+      const previousDelta=previousSession ? getSessionTotalsDelta(previousSession) : null;
+      const nextDelta=getSessionTotalsDelta(normalized);
       upsertFallbackSession(normalized);
       if(previousDelta){
         fallbackTotals=subtractTotals(fallbackTotals,previousDelta);
       }
       fallbackTotals=addTotals(fallbackTotals,nextDelta);
+      await updateTrendBucketsNow(previousSession,normalized);
       persistBackupSnapshot();
       return normalized;
     }
 
-    try{
-      const db=await openDb();
-      const currentTotals=await readStoredTotals();
-      const adjustedTotals=previousDelta ? subtractTotals(currentTotals,previousDelta) : currentTotals;
-      const updatedTotals=addTotals(adjustedTotals,nextDelta);
-      const tx=db.transaction([STORE_NAME,TOTALS_STORE_NAME],"readwrite");
-      tx.objectStore(STORE_NAME).put(normalized);
-      tx.objectStore(TOTALS_STORE_NAME).put(updatedTotals);
-      await txDone(tx);
-    }catch(e){}
+    const db=await openDb();
+    const tx=db.transaction([STORE_NAME,TOTALS_STORE_NAME,TREND_STORE_NAME],"readwrite");
+    const sessionStore=tx.objectStore(STORE_NAME);
+    const trendStore=tx.objectStore(TREND_STORE_NAME);
+    const previousRaw=await requestToPromise(
+      sessionStore.get(normalized.sessionId),
+      "Failed to read session before saving"
+    );
+    const previousSession=previousRaw ? normalizeHistoryRecord(previousRaw) : null;
+    const previousDelta=previousSession ? getSessionTotalsDelta(previousSession) : null;
+    const nextDelta=getSessionTotalsDelta(normalized);
+    const currentTotals=normalizeTotalsRecord(await requestToPromise(
+      tx.objectStore(TOTALS_STORE_NAME).get("totals"),
+      "Failed to read history totals before saving"
+    ));
+    const updatedTotals=addTotals(previousDelta ? subtractTotals(currentTotals,previousDelta) : currentTotals,nextDelta);
+    const previousContribution=getTrendBucketContribution(previousSession);
+    const nextContribution=getTrendBucketContribution(normalized);
+    const bucketIds=[...new Set([previousContribution,nextContribution].filter(Boolean).map(contribution=>contribution.id))];
+    const buckets=new Map();
+    await Promise.all(bucketIds.map(async id=>{
+      const bucket=normalizeTrendBucket(await requestToPromise(
+        trendStore.get(id),
+        "Failed to read trend bucket before saving"
+      ));
+      if(bucket) buckets.set(id,bucket);
+    }));
+    applyTrendBucketContribution(buckets,previousContribution,-1);
+    applyTrendBucketContribution(buckets,nextContribution,1);
+    sessionStore.put(normalized);
+    tx.objectStore(TOTALS_STORE_NAME).put(updatedTotals);
+    bucketIds.forEach(id=>{
+      const bucket=buckets.get(id);
+      if(bucket) trendStore.put(bucket);
+      else trendStore.delete(id);
+    });
+    trendStore.put({id:TREND_META_ID,schemaVersion:TREND_SCHEMA_VERSION});
+    await txDone(tx);
     upsertFallbackSession(normalized);
-    if(previousDelta){
-      fallbackTotals=subtractTotals(fallbackTotals,previousDelta);
-    }
-    fallbackTotals=addTotals(fallbackTotals,nextDelta);
+    fallbackTotals=updatedTotals;
+    fallbackTrendBuckets.length=0;
+    fallbackTrendBuckets.push(...(await readTrendBucketsFromDb()));
     persistBackupSnapshot();
     return normalized;
   }
 
-  async function getStoredSessionById(sessionId){
-    if(!sessionId) return null;
-    if(!supportsIndexedDB){
-      return fallbackSessions.find(session=>session.sessionId===sessionId) || null;
-    }
-
-    await migrateBackupSnapshotToIndexedDb();
-    if(hasBackupSnapshot){
-      return fallbackSessions.find(session=>session.sessionId===sessionId) || null;
-    }
-
-    try{
-      const db=await openDb();
-      const tx=db.transaction(STORE_NAME,"readonly");
-      const request=tx.objectStore(STORE_NAME).get(sessionId);
-      const session=await new Promise((resolve,reject)=>{
-        request.onsuccess=()=>resolve(request.result || null);
-        request.onerror=()=>reject(request.error || new Error("Failed to read session"));
-      });
-      return session ? normalizeHistoryRecord(session) : null;
-    }catch(e){
-      return fallbackSessions.find(session=>session.sessionId===sessionId) || null;
-    }
+  function saveSession(record){
+    return enqueueHistoryWrite(()=>saveSessionInternal(record));
   }
 
   function getSortedFallbackSessions(){
@@ -1526,10 +1978,19 @@ const sessionHistoryStore=(()=>{
 
   function getMostRecentFallbackHistorySettings(){
     const latestSession=getSortedFallbackSessions().find(session=>ARITHMETIC_MODES.has(session?.arithmeticMode));
-    return latestSession
+    if(latestSession){
+      return {
+        mode:latestSession.arithmeticMode,
+        nBackLevel:normalizeNBackLevel(latestSession.nBackLevel)
+      };
+    }
+    const latestTrend=fallbackTrendBuckets
+      .filter(bucket=>ARITHMETIC_MODES.has(bucket?.mode))
+      .sort((a,b)=>Number(b.dayStart||0)-Number(a.dayStart||0))[0];
+    return latestTrend
       ? {
-          mode:latestSession.arithmeticMode,
-          nBackLevel:normalizeNBackLevel(latestSession.nBackLevel)
+          mode:latestTrend.mode,
+          nBackLevel:normalizeNBackLevel(latestTrend.nBackLevel)
         }
       : getDefaultHistorySettings();
   }
@@ -1539,6 +2000,7 @@ const sessionHistoryStore=(()=>{
       return getMostRecentFallbackHistorySettings();
     }
 
+    await ensureTrendBuckets();
     await migrateBackupSnapshotToIndexedDb();
     if(hasBackupSnapshot){
       return getMostRecentFallbackHistorySettings();
@@ -1560,10 +2022,20 @@ const sessionHistoryStore=(()=>{
         };
         request.onerror=()=>reject(request.error || new Error("Failed to read most recent session"));
       });
-      return latestSession && ARITHMETIC_MODES.has(latestSession.arithmeticMode)
+      if(latestSession && ARITHMETIC_MODES.has(latestSession.arithmeticMode)){
+        return {
+          mode:latestSession.arithmeticMode,
+          nBackLevel:normalizeNBackLevel(latestSession.nBackLevel)
+        };
+      }
+      const trendBuckets=await readTrendBucketsFromDb();
+      const latestTrend=trendBuckets
+        .filter(bucket=>ARITHMETIC_MODES.has(bucket?.mode))
+        .sort((a,b)=>Number(b.dayStart||0)-Number(a.dayStart||0))[0];
+      return latestTrend
         ? {
-            mode:latestSession.arithmeticMode,
-            nBackLevel:normalizeNBackLevel(latestSession.nBackLevel)
+            mode:latestTrend.mode,
+            nBackLevel:normalizeNBackLevel(latestTrend.nBackLevel)
           }
         : getDefaultHistorySettings();
     }catch(e){
@@ -1571,68 +2043,22 @@ const sessionHistoryStore=(()=>{
     }
   }
 
-  async function getMostRecentHistoryMode(){
-    const settings=await getMostRecentHistorySettings();
-    return settings.mode;
-  }
-
   async function getTrendData(mode,nBackLevel){
     const resolvedMode=ARITHMETIC_MODES.has(mode) ? mode : defaultSettings.mode;
     const resolvedNBackLevel=normalizeNBackLevel(nBackLevel);
-    if(!supportsIndexedDB){
-      return buildTrendDataForSessions(getSortedFallbackSessions(),resolvedMode,resolvedNBackLevel);
-    }
-
-    await migrateBackupSnapshotToIndexedDb();
-    if(hasBackupSnapshot){
-      return buildTrendDataForSessions(getSortedFallbackSessions(),resolvedMode,resolvedNBackLevel);
-    }
-
     try{
-      const db=await openDb();
-      const tx=db.transaction(STORE_NAME,"readonly");
-      const source=tx.objectStore(STORE_NAME).index(ENDED_AT_INDEX_NAME);
-      const accuracyBuckets=new Map();
-      const responseBuckets=new Map();
-
-      await new Promise((resolve,reject)=>{
-        const request=source.openCursor(null,"prev");
-        request.onsuccess=()=>{
-          const cursor=request.result;
-          if(!cursor){
-            resolve();
-            return;
-          }
-
-          const session=normalizeHistoryRecord(cursor.value);
-          if(!isSessionInTrendGroup(session,resolvedMode,resolvedNBackLevel)){
-            cursor.continue();
-            return;
-          }
-
-          const weight=Math.max(1,Number(session.totalQuestionsAsked)||0);
-          addDailyTrendValues(accuracyBuckets,responseBuckets,session,weight);
-
-          cursor.continue();
-        };
-        request.onerror=()=>reject(request.error || new Error("Failed to read trend data"));
-      });
-
-      const accuracyPoints=finalizeDailyTrendBuckets(accuracyBuckets);
-      const responsePoints=finalizeDailyTrendBuckets(responseBuckets);
-
-      return {
-        accuracyPoints,
-        responsePoints,
-        mode:resolvedMode,
-        nBackLevel:resolvedNBackLevel
-      };
+      await ensureTrendBuckets();
+      return buildTrendDataFromBuckets(
+        await readTrendBucketsFromDb(),
+        resolvedMode,
+        resolvedNBackLevel
+      );
     }catch(e){
       return buildTrendDataForSessions(getSortedFallbackSessions(),resolvedMode,resolvedNBackLevel);
     }
   }
 
-  async function saveLatestTrace(record){
+  async function saveLatestTraceInternal(record){
     const normalized=normalizeLatestTraceRecord(record);
     if(!supportsIndexedDB){
       fallbackLatestTrace=normalized;
@@ -1640,15 +2066,17 @@ const sessionHistoryStore=(()=>{
       return normalized;
     }
 
-    try{
-      const db=await openDb();
-      const tx=db.transaction(TRACE_STORE_NAME,"readwrite");
-      tx.objectStore(TRACE_STORE_NAME).put(normalized);
-      await txDone(tx);
-    }catch(e){}
+    const db=await openDb();
+    const tx=db.transaction(TRACE_STORE_NAME,"readwrite");
+    tx.objectStore(TRACE_STORE_NAME).put(normalized);
+    await txDone(tx);
     fallbackLatestTrace=normalized;
     persistBackupSnapshot();
     return normalized;
+  }
+
+  function saveLatestTrace(record){
+    return enqueueHistoryWrite(()=>saveLatestTraceInternal(record));
   }
 
   function createEmptyTotals(){
@@ -1701,6 +2129,11 @@ const sessionHistoryStore=(()=>{
     });
   }
 
+  function sumSessionTotals(sessions){
+    return (Array.isArray(sessions) ? sessions : [])
+      .reduce((totals,session)=>addTotals(totals,getSessionTotalsDelta(session)),createEmptyTotals());
+  }
+
   async function readStoredTotals(){
     if(!supportsIndexedDB){
       return normalizeTotalsRecord(fallbackTotals);
@@ -1714,41 +2147,17 @@ const sessionHistoryStore=(()=>{
     try{
       const db=await openDb();
       const tx=db.transaction(TOTALS_STORE_NAME,"readonly");
-      const request=tx.objectStore(TOTALS_STORE_NAME).get("totals");
-      const totals=await new Promise((resolve,reject)=>{
-        request.onsuccess=()=>resolve(request.result || null);
-        request.onerror=()=>reject(request.error || new Error("Failed to read history totals"));
-      });
+      const totals=await requestToPromise(
+        tx.objectStore(TOTALS_STORE_NAME).get("totals"),
+        "Failed to read history totals"
+      );
       if(totals){
         fallbackTotals=normalizeTotalsRecord(totals);
-        persistBackupSnapshot();
         return fallbackTotals;
       }
     }catch(e){}
 
     return normalizeTotalsRecord(fallbackTotals);
-  }
-
-  async function writeStoredTotals(totals){
-    const normalized=normalizeTotalsRecord(totals);
-    fallbackTotals=normalized;
-    persistBackupSnapshot();
-    if(!supportsIndexedDB){
-      return normalized;
-    }
-
-    try{
-      const db=await openDb();
-      const tx=db.transaction(TOTALS_STORE_NAME,"readwrite");
-      tx.objectStore(TOTALS_STORE_NAME).put(normalized);
-      await txDone(tx);
-    }catch(e){}
-    return normalized;
-  }
-
-  async function replaceStoredTotalsWithSessions(sessions){
-    const totals=sessions.reduce((acc,session)=>addTotals(acc,getSessionTotalsDelta(session)),createEmptyTotals());
-    return writeStoredTotals(totals);
   }
 
   async function getAllSessions(){
@@ -1764,16 +2173,12 @@ const sessionHistoryStore=(()=>{
     try{
       const db=await openDb();
       const tx=db.transaction(STORE_NAME,"readonly");
-      const request=tx.objectStore(STORE_NAME).getAll();
-      const sessions=await new Promise((resolve,reject)=>{
-        request.onsuccess=()=>resolve(request.result || []);
-        request.onerror=()=>reject(request.error || new Error("Failed to read history"));
-      });
-      if(sessions.length){
-        fallbackSessions.length=0;
-        fallbackSessions.push(...sessions.map(normalizeHistoryRecord));
-        persistBackupSnapshot();
-      }
+      const sessions=await requestToPromise(
+        tx.objectStore(STORE_NAME).getAll(),
+        "Failed to read history"
+      );
+      fallbackSessions.length=0;
+      fallbackSessions.push(...sessions.map(normalizeHistoryRecord));
       return sessions.map(normalizeHistoryRecord).sort((a,b)=>b.endedAt-a.endedAt);
     }catch(e){
       return getSortedFallbackSessions();
@@ -1793,14 +2198,12 @@ const sessionHistoryStore=(()=>{
     try{
       const db=await openDb();
       const tx=db.transaction(TRACE_STORE_NAME,"readonly");
-      const request=tx.objectStore(TRACE_STORE_NAME).get("latest");
-      const trace=await new Promise((resolve,reject)=>{
-        request.onsuccess=()=>resolve(request.result || null);
-        request.onerror=()=>reject(request.error || new Error("Failed to read latest trace"));
-      });
+      const trace=await requestToPromise(
+        tx.objectStore(TRACE_STORE_NAME).get("latest"),
+        "Failed to read latest trace"
+      );
       if(trace){
         fallbackLatestTrace=normalizeLatestTraceRecord(trace);
-        persistBackupSnapshot();
       }
       return trace ? normalizeLatestTraceRecord(trace) : null;
     }catch(e){
@@ -1808,125 +2211,197 @@ const sessionHistoryStore=(()=>{
     }
   }
 
-  async function clearAll(){
+  async function clearAllInternal(){
     if(!supportsIndexedDB){
       fallbackSessions.length=0;
+      fallbackTrendBuckets.length=0;
+      trendBucketsInitialized=true;
       fallbackLatestTrace=null;
       fallbackTotals=createEmptyTotals();
       persistBackupSnapshot();
+      clearImportedBackupLedger();
       return;
     }
 
-    try{
-      const db=await openDb();
-      const tx=db.transaction([STORE_NAME,TRACE_STORE_NAME,TOTALS_STORE_NAME],"readwrite");
-      tx.objectStore(STORE_NAME).clear();
-      tx.objectStore(TRACE_STORE_NAME).clear();
-      tx.objectStore(TOTALS_STORE_NAME).clear();
-      await txDone(tx);
-    }catch(e){}
+    const db=await openDb();
+    const tx=db.transaction([STORE_NAME,TRACE_STORE_NAME,TOTALS_STORE_NAME,TREND_STORE_NAME],"readwrite");
+    tx.objectStore(STORE_NAME).clear();
+    tx.objectStore(TRACE_STORE_NAME).clear();
+    tx.objectStore(TOTALS_STORE_NAME).clear();
+    tx.objectStore(TREND_STORE_NAME).clear();
+    await txDone(tx);
     fallbackSessions.length=0;
+    fallbackTrendBuckets.length=0;
+    trendBucketsInitialized=true;
     fallbackLatestTrace=null;
     fallbackTotals=createEmptyTotals();
     persistBackupSnapshot();
+    clearImportedBackupLedger();
   }
 
-  async function clearSessionsOnly(){
+  async function clearSessionsOnlyInternal(){
+    await ensureTrendBuckets();
     if(!supportsIndexedDB){
       fallbackSessions.length=0;
       fallbackLatestTrace=null;
       persistBackupSnapshot();
+      clearImportedBackupLedger();
       return;
     }
 
-    try{
-      const db=await openDb();
-      const tx=db.transaction([STORE_NAME,TRACE_STORE_NAME],"readwrite");
-      tx.objectStore(STORE_NAME).clear();
-      tx.objectStore(TRACE_STORE_NAME).clear();
-      await txDone(tx);
-    }catch(e){}
+    const db=await openDb();
+    const tx=db.transaction([STORE_NAME,TRACE_STORE_NAME,TREND_STORE_NAME],"readwrite");
+    tx.objectStore(STORE_NAME).clear();
+    tx.objectStore(TRACE_STORE_NAME).clear();
+    await txDone(tx);
     fallbackSessions.length=0;
     fallbackLatestTrace=null;
     persistBackupSnapshot();
+    clearImportedBackupLedger();
   }
 
-  async function importData(payload){
+  function clearAll(){
+    return enqueueHistoryWrite(clearAllInternal);
+  }
+
+  function clearSessionsOnly(){
+    return enqueueHistoryWrite(clearSessionsOnlyInternal);
+  }
+
+  async function importDataInternal(payload){
+    const importKey=payload && !Array.isArray(payload) ? String(payload.exportedAt||"") : "";
+    if(hasImportedBackup(importKey)) return 0;
     const source=Array.isArray(payload) ? payload : (Array.isArray(payload?.sessions) ? payload.sessions : []);
     const sessions=source.map(normalizeHistoryRecord);
+    const importedTrendBuckets=Array.isArray(payload?.trendBuckets)
+      ? payload.trendBuckets.map(normalizeTrendBucket).filter(Boolean)
+      : null;
     const latestTracePayload=payload?.latestSessionTrace ?? payload?.latestTrace ?? null;
     const latestTrace=latestTracePayload ? normalizeLatestTraceRecord(latestTracePayload) : null;
     const totalsPayload=payload?.historyTotals ?? payload?.totals ?? null;
     const totals=totalsPayload ? normalizeTotalsRecord(totalsPayload) : null;
+    await ensureTrendBuckets();
 
     if(!supportsIndexedDB){
       const existingSessions=new Map(fallbackSessions.map(session=>[session.sessionId,session]));
+      const previousSessions=new Map(existingSessions);
       sessions.forEach(session=>{
+        const previousSession=existingSessions.get(session.sessionId);
         upsertFallbackSession(session);
         existingSessions.set(session.sessionId,session);
+        if(previousSession){
+          fallbackTotals=subtractTotals(fallbackTotals,getSessionTotalsDelta(previousSession));
+        }
+        fallbackTotals=addTotals(fallbackTotals,getSessionTotalsDelta(session));
       });
       if(latestTrace) fallbackLatestTrace=latestTrace;
-      if(totals && sessions.length===0){
-        fallbackTotals=totals;
-      }else{
-        let mergedTotals=normalizeTotalsRecord(fallbackTotals);
-        sessions.forEach(session=>{
-          const previous=existingSessions.get(session.sessionId);
-          if(previous){
-            mergedTotals=subtractTotals(mergedTotals,getSessionTotalsDelta(previous));
-          }
-          mergedTotals=addTotals(mergedTotals,getSessionTotalsDelta(session));
-          existingSessions.set(session.sessionId,session);
-        });
-        fallbackTotals=mergedTotals;
+      if(totals){
+        fallbackTotals=addTotals(
+          fallbackTotals,
+          subtractTotals(totals,sumSessionTotals(sessions))
+        );
       }
+      await mergeImportedTrendDataNow(sessions,previousSessions,importedTrendBuckets);
       persistBackupSnapshot();
+      rememberImportedBackup(importKey);
       return sessions.length;
     }
 
-    const currentSessions=await getAllSessions();
+    await ensureTrendBuckets();
+    const db=await openDb();
+    const tx=db.transaction([STORE_NAME,TRACE_STORE_NAME,TOTALS_STORE_NAME,TREND_STORE_NAME],"readwrite");
+    const currentSessions=(await requestToPromise(
+      tx.objectStore(STORE_NAME).getAll(),
+      "Failed to read sessions before import"
+    )).map(normalizeHistoryRecord);
+    const currentBuckets=(await requestToPromise(
+      tx.objectStore(TREND_STORE_NAME).getAll(),
+      "Failed to read trends before import"
+    )).map(normalizeTrendBucket).filter(Boolean);
+    const currentTotals=normalizeTotalsRecord(await requestToPromise(
+      tx.objectStore(TOTALS_STORE_NAME).get("totals"),
+      "Failed to read totals before import"
+    ));
     const currentSessionsById=new Map(currentSessions.map(session=>[session.sessionId,session]));
-    const currentTotals=await readStoredTotals();
-    let mergedTotals=totals && sessions.length===0 ? totals : currentTotals;
+    const previousSessionsById=new Map(currentSessionsById);
+    let mergedTotals=currentTotals;
 
-    if(!totals || sessions.length>0){
-      sessions.forEach(session=>{
-        const previous=currentSessionsById.get(session.sessionId);
-        if(previous){
-          mergedTotals=subtractTotals(mergedTotals,getSessionTotalsDelta(previous));
-        }
-        mergedTotals=addTotals(mergedTotals,getSessionTotalsDelta(session));
-        currentSessionsById.set(session.sessionId,session);
-      });
+    sessions.forEach(session=>{
+      const previous=currentSessionsById.get(session.sessionId);
+      if(previous){
+        mergedTotals=subtractTotals(mergedTotals,getSessionTotalsDelta(previous));
+      }
+      mergedTotals=addTotals(mergedTotals,getSessionTotalsDelta(session));
+      currentSessionsById.set(session.sessionId,session);
+    });
+    if(totals){
+      mergedTotals=addTotals(
+        mergedTotals,
+        subtractTotals(totals,sumSessionTotals(sessions))
+      );
     }
 
-    const db=await openDb();
-    const tx=db.transaction([STORE_NAME,TRACE_STORE_NAME,TOTALS_STORE_NAME],"readwrite");
     const store=tx.objectStore(STORE_NAME);
+    const mergedTrend=buildMergedTrendBuckets(currentBuckets,sessions,previousSessionsById,importedTrendBuckets);
     sessions.forEach(session=>store.put(session));
     if(latestTrace){
       tx.objectStore(TRACE_STORE_NAME).put(latestTrace);
     }
     tx.objectStore(TOTALS_STORE_NAME).put(mergedTotals);
+    const trendStore=tx.objectStore(TREND_STORE_NAME);
+    mergedTrend.deletedIds.forEach(id=>trendStore.delete(id));
+    mergedTrend.buckets.forEach(bucket=>trendStore.put(bucket));
+    trendStore.put({id:TREND_META_ID,schemaVersion:TREND_SCHEMA_VERSION});
     await txDone(tx);
+    const importedSessionIds=new Set(sessions.map(session=>session.sessionId));
     fallbackSessions.length=0;
-    fallbackSessions.push(...sessions.map(normalizeHistoryRecord), ...currentSessions.filter(session=>!sessions.some(next=>next.sessionId===session.sessionId)));
+    fallbackSessions.push(...sessions, ...currentSessions.filter(session=>!importedSessionIds.has(session.sessionId)));
     fallbackLatestTrace=latestTrace || fallbackLatestTrace;
     fallbackTotals=normalizeTotalsRecord(mergedTotals);
+    fallbackTrendBuckets.length=0;
+    fallbackTrendBuckets.push(...mergedTrend.buckets);
+    trendBucketsInitialized=true;
     persistBackupSnapshot();
+    rememberImportedBackup(importKey);
     return sessions.length;
   }
 
+  function importData(payload){
+    return enqueueHistoryWrite(()=>importDataInternal(payload));
+  }
+
+  function waitForWrites(){
+    return historyWriteChain;
+  }
+
   async function exportData(){
-    const sessions=await getAllSessions();
-    const latestSessionTrace=await getLatestTrace();
-    const historyTotals=await readStoredTotals();
+    await ensureTrendBuckets();
+    if(!supportsIndexedDB || hasBackupSnapshot){
+      return {
+        schemaVersion:2,
+        exportedAt:new Date().toISOString(),
+        sessions:getSortedFallbackSessions(),
+        trendBuckets:fallbackTrendBuckets.map(normalizeTrendBucket).filter(Boolean),
+        latestSessionTrace:fallbackLatestTrace ? normalizeLatestTraceRecord(fallbackLatestTrace) : null,
+        historyTotals:normalizeTotalsRecord(fallbackTotals)
+      };
+    }
+    const db=await openDb();
+    const tx=db.transaction([STORE_NAME,TRACE_STORE_NAME,TOTALS_STORE_NAME,TREND_STORE_NAME],"readonly");
+    const [rawSessions,rawTrace,rawTotals,rawTrendBuckets]=await Promise.all([
+      requestToPromise(tx.objectStore(STORE_NAME).getAll(),"Failed to export sessions"),
+      requestToPromise(tx.objectStore(TRACE_STORE_NAME).get("latest"),"Failed to export latest trace"),
+      requestToPromise(tx.objectStore(TOTALS_STORE_NAME).get("totals"),"Failed to export history totals"),
+      requestToPromise(tx.objectStore(TREND_STORE_NAME).getAll(),"Failed to export trend data")
+    ]);
+    await txDone(tx);
     return {
-      schemaVersion:1,
+      schemaVersion:2,
       exportedAt:new Date().toISOString(),
-      sessions,
-      latestSessionTrace,
-      historyTotals
+      sessions:(rawSessions||[]).map(normalizeHistoryRecord).sort((a,b)=>Number(b.endedAt||0)-Number(a.endedAt||0)),
+      trendBuckets:(rawTrendBuckets||[]).map(normalizeTrendBucket).filter(Boolean),
+      latestSessionTrace:rawTrace ? normalizeLatestTraceRecord(rawTrace) : null,
+      historyTotals:normalizeTotalsRecord(rawTotals)
     };
   }
 
@@ -1945,7 +2420,6 @@ const sessionHistoryStore=(()=>{
     saveLatestTrace,
     getAllSessions,
     getLatestTrace,
-    getMostRecentHistoryMode,
     getMostRecentHistorySettings,
     getSessionPage,
     getTrendData,
@@ -1953,6 +2427,7 @@ const sessionHistoryStore=(()=>{
     clearSessionsOnly,
     importData,
     exportData,
+    waitForWrites,
     getStats
   };
 })();
@@ -3714,9 +4189,7 @@ async function toggleHistorySessionTrendInclusion(session,button){
       ...session,
       includeInTrends:nextIncludeInTrends
     };
-    const savePromise=historyTrendUpdateChain.then(()=>sessionHistoryStore.saveSession(updatedSession));
-    historyTrendUpdateChain=savePromise.catch(()=>{});
-    const saved=await savePromise;
+    const saved=await sessionHistoryStore.saveSession(updatedSession);
     session.includeInTrends=typeof saved?.includeInTrends==="boolean" ? saved.includeInTrends : nextIncludeInTrends;
     applyHistoryTrendToggleState(button,session.includeInTrends);
   }catch(e){
@@ -3925,7 +4398,7 @@ function renderHistoryView(viewData){
 async function refreshHistoryTrendCharts(){
   const refreshToken=++historyTrendRefreshToken;
   try{
-    await historyTrendUpdateChain;
+    await sessionHistoryStore.waitForWrites();
     const [latestTrace,fallbackSettings]=await Promise.all([
       sessionHistoryStore.getLatestTrace(),
       sessionHistoryStore.getMostRecentHistorySettings()
@@ -3944,7 +4417,7 @@ async function refreshHistorySessions(){
   const refreshToken=++historySessionRefreshToken;
   const filtersSnapshot={ ...historyFilters };
   try{
-    await historyTrendUpdateChain;
+    await sessionHistoryStore.waitForWrites();
     const [stats,pageData]=await Promise.all([
       sessionHistoryStore.getStats(),
       sessionHistoryStore.getSessionPage({
@@ -3971,7 +4444,7 @@ async function refreshHistoryView(){
   const sessionRefreshToken=++historySessionRefreshToken;
   const filtersSnapshot={ ...historyFilters };
   try{
-    await historyTrendUpdateChain;
+    await sessionHistoryStore.waitForWrites();
     const [stats,latestTrace,fallbackSettings,pageData]=await Promise.all([
       sessionHistoryStore.getStats(),
       sessionHistoryStore.getLatestTrace(),
@@ -5023,8 +5496,12 @@ function stopGame(reason="manual"){
   const latestTraceRecord=buildLatestTraceRecord();
   correctResponseTimes=[];
   if(shouldStoreSession(sessionRecord)){
-    void sessionHistoryStore.saveLatestTrace(latestTraceRecord).catch(()=>{});
-    void sessionHistoryStore.saveSession(sessionRecord).catch(()=>{});
+    void Promise.all([
+      sessionHistoryStore.saveLatestTrace(latestTraceRecord),
+      sessionHistoryStore.saveSession(sessionRecord)
+    ]).catch(()=>{
+      setProfileStatus("This browser could not save the session history.","error");
+    });
   }
   setSessionState("results");
 }
@@ -5097,6 +5574,12 @@ const profileSourceField=document.getElementById("profileSourceField");
 const profileNameError=document.getElementById("profileNameError");
 const cancelProfileNameBtn=document.getElementById("cancelProfileNameBtn");
 const confirmProfileNameBtn=document.getElementById("confirmProfileNameBtn");
+const confirmationDialog=document.getElementById("confirmationDialog");
+const confirmationForm=document.getElementById("confirmationForm");
+const confirmationDialogTitle=document.getElementById("confirmationDialogTitle");
+const confirmationDialogMessage=document.getElementById("confirmationDialogMessage");
+const cancelConfirmationBtn=document.getElementById("cancelConfirmationBtn");
+const confirmConfirmationBtn=document.getElementById("confirmConfirmationBtn");
 const playbackSpeedValue=document.getElementById("playbackSpeedValue");
 const currentInterval=document.getElementById("currentInterval");
 const timeLeft=document.getElementById("timeLeft");
@@ -5232,6 +5715,15 @@ profileNameDialog.addEventListener("close",()=>{
   }
   profileNameDialogTrigger=null;
 });
+confirmationForm.addEventListener("submit",submitConfirmationDialog);
+cancelConfirmationBtn.onclick=closeConfirmationDialog;
+confirmationDialog.addEventListener("close",()=>{
+  confirmationDialogAction=null;
+  if(confirmationDialogTrigger instanceof HTMLElement){
+    confirmationDialogTrigger.focus();
+  }
+  confirmationDialogTrigger=null;
+});
 window.addEventListener("storage",event=>{
   if(event.key!==PROFILES_KEY || event.storageArea!==window.localStorage) return;
   if(settingsSaveTimerId!==null){
@@ -5244,7 +5736,7 @@ window.addEventListener("storage",event=>{
   const activeProfile=findProfileById(activeProfileId);
   if(activeProfile) applySettings(activeProfile.settings);
   renderProfileOptions(activeProfileId);
-  setProfileStatus("Profiles updated in another tab.");
+  setProfileStatus("");
 });
 historyBtn.onclick=()=>{
   setHistoryVisible(true);
@@ -5259,22 +5751,38 @@ latestIntervalBackBtn.onclick=()=>{
   }
 };
 clearSessionsOnlyBtn.onclick=async()=>{
-  if(!window.confirm("Delete saved sessions but keep lifetime totals?")) return;
-  try{
-    await historyTrendUpdateChain;
-    setHistoryPageIndex(0);
-    await sessionHistoryStore.clearSessionsOnly();
-    await refreshHistoryView();
-  }catch(e){}
+  openConfirmationDialog({
+    title:"Clear Session Details",
+    message:"Delete detailed session history? Lifetime totals and trend graphs will be preserved. This cannot be undone.",
+    confirmLabel:"Clear Session Details",
+    onConfirm:async()=>{
+      try{
+        await sessionHistoryStore.waitForWrites();
+        setHistoryPageIndex(0);
+        await sessionHistoryStore.clearSessionsOnly();
+        await refreshHistoryView();
+      }catch(e){
+        setProfileStatus("This browser could not clear session details.","error");
+      }
+    }
+  });
 };
 clearAllHistoryBtn.onclick=async()=>{
-  if(!window.confirm("Delete all saved history and totals from this browser?")) return;
-  try{
-    await historyTrendUpdateChain;
-    setHistoryPageIndex(0);
-    await sessionHistoryStore.clearAll();
-    await refreshHistoryView();
-  }catch(e){}
+  openConfirmationDialog({
+    title:"Clear All History",
+    message:"Delete all saved history and totals from this browser? This cannot be undone.",
+    confirmLabel:"Clear All History",
+    onConfirm:async()=>{
+      try{
+        await sessionHistoryStore.waitForWrites();
+        setHistoryPageIndex(0);
+        await sessionHistoryStore.clearAll();
+        await refreshHistoryView();
+      }catch(e){
+        setProfileStatus("This browser could not clear history.","error");
+      }
+    }
+  });
 };
 historyFilterBtn.onclick=()=>{
   toggleHistoryFiltersVisible();
@@ -5322,7 +5830,7 @@ refreshSessionsBtn.onclick=()=>{
 };
 exportHistoryBtn.onclick=async()=>{
   try{
-    await historyTrendUpdateChain;
+    await sessionHistoryStore.waitForWrites();
     const data=await sessionHistoryStore.exportData();
     const blob=new Blob([JSON.stringify(data,null,2)],{ type:"application/json" });
     const url=URL.createObjectURL(blob);
@@ -5333,12 +5841,14 @@ exportHistoryBtn.onclick=async()=>{
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-  }catch(e){}
+  }catch(e){
+    setProfileStatus("This browser could not export history.","error");
+  }
 };
 exportHistoryCsvBtn.onclick=async()=>{
   try{
     const filtersSnapshot={ ...historyFilters };
-    await historyTrendUpdateChain;
+    await sessionHistoryStore.waitForWrites();
     const sessions=applyHistoryFilters(await sessionHistoryStore.getAllSessions(),filtersSnapshot);
     const blob=new Blob(["\uFEFF",buildSessionHistoryCsv(sessions)],{ type:"text/csv;charset=utf-8" });
     const url=URL.createObjectURL(blob);
@@ -5349,20 +5859,24 @@ exportHistoryCsvBtn.onclick=async()=>{
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-  }catch(e){}
+  }catch(e){
+    setProfileStatus("This browser could not export the session report.","error");
+  }
 };
 importHistoryBtn.onclick=()=>importHistoryInput.click();
 importHistoryInput.onchange=async()=>{
   const file=importHistoryInput.files&&importHistoryInput.files[0];
   if(!file) return;
   try{
-    await historyTrendUpdateChain;
+    await sessionHistoryStore.waitForWrites();
     const text=await file.text();
     const parsed=JSON.parse(text);
     await sessionHistoryStore.importData(parsed);
     setHistoryPageIndex(0);
     await refreshHistoryView();
-  }catch(e){}
+  }catch(e){
+    setProfileStatus("This browser could not import history.","error");
+  }
   importHistoryInput.value="";
 };
 historyStatusFilter.onchange=()=>{
